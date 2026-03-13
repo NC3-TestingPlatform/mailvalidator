@@ -256,6 +256,9 @@ def _probe_tls(
     # certificate
     der = raw_sock.getpeercert(binary_form=True)
     if der:
+        details._cert_der = (
+            der  # stash for DANE verification  # type: ignore[attr-defined]
+        )
         info = _cert_info(der)
         details.cert_subject = info.get("subject", "")
         details.cert_issuer = info.get("issuer", "")
@@ -1640,15 +1643,130 @@ def _check_caa(host: str, checks: list[CheckResult]) -> list[str]:
     return caa_records
 
 
-def _check_dane(host: str, port: int, checks: list[CheckResult]) -> None:
-    """Look up TLSA records for DANE and perform basic validity checks."""
+# ---------------------------------------------------------------------------
+# DANE / TLSA helpers
+# ---------------------------------------------------------------------------
+
+
+def _tlsa_fingerprint(der: bytes, selector: int, matching: int) -> str | None:
+    """Compute the TLSA fingerprint for a given selector and matching type.
+
+    Selector:
+      0 = Full certificate DER
+      1 = SubjectPublicKeyInfo DER (spki)
+    Matching type:
+      0 = Exact (raw bytes as hex)
+      1 = SHA-256
+      2 = SHA-512
+    """
+    try:
+        if selector == 0:
+            data = der
+        elif selector == 1:
+            # Extract the SubjectPublicKeyInfo from the cert via cryptography
+            from cryptography import x509 as _x509
+            from cryptography.hazmat.primitives.serialization import (
+                Encoding,
+                PublicFormat,
+            )
+
+            cert = _x509.load_der_x509_certificate(der)
+            data = cert.public_key().public_bytes(
+                Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+            )
+        else:
+            return None
+
+        if matching == 0:
+            return data.hex()
+        elif matching == 1:
+            return hashlib.sha256(data).hexdigest()
+        elif matching == 2:
+            return hashlib.sha512(data).hexdigest()
+        else:
+            return None
+    except Exception:
+        return None
+
+
+def _fetch_cert_der(
+    host: str, port: int, helo_domain: str, sni_hostname: str | None
+) -> bytes | None:
+    """Open a fresh STARTTLS connection and return the raw DER certificate."""
+    try:
+        smtp = smtplib.SMTP(timeout=_TIMEOUT)
+        smtp.connect(host, port)
+        smtp.ehlo(helo_domain)
+        if not smtp.has_extn("STARTTLS"):
+            smtp.quit()
+            return None
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        smtp._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
+        if not sni_hostname:
+            ctx.check_hostname = False
+        smtp.starttls(context=ctx)
+        der = smtp.sock.getpeercert(binary_form=True)  # type: ignore[union-attr]
+        try:
+            smtp.quit()
+        except Exception:
+            pass
+        return der
+    except Exception:
+        return None
+
+
+def _verify_tlsa_record(record_str: str, cert_der: bytes) -> tuple[bool, str]:
+    """Return (matches, description) for one TLSA record vs the server cert.
+
+    record_str is the raw string from DNS, e.g. "3 1 1 abcdef..."
+    """
+    parts = record_str.split()
+    if len(parts) < 4:
+        return False, f"Malformed TLSA record: {record_str!r}"
+    try:
+        usage, selector, matching = int(parts[0]), int(parts[1]), int(parts[2])
+        dns_hex = "".join(parts[3:]).lower()
+    except ValueError:
+        return False, f"Could not parse TLSA record fields: {record_str!r}"
+
+    usage_name = {0: "PKIX-TA", 1: "PKIX-EE", 2: "DANE-TA", 3: "DANE-EE"}.get(
+        usage, str(usage)
+    )
+    selector_name = {0: "Cert", 1: "SPKI"}.get(selector, str(selector))
+    matching_name = {0: "Full", 1: "SHA-256", 2: "SHA-512"}.get(matching, str(matching))
+    label = (
+        f"{usage_name}({usage}) {selector_name}({selector}) {matching_name}({matching})"
+    )
+
+    computed = _tlsa_fingerprint(cert_der, selector, matching)
+    if computed is None:
+        return (
+            False,
+            f"{label}: could not compute fingerprint (selector/matching not supported)",
+        )
+
+    if computed == dns_hex:
+        return True, f"{label}: fingerprint matches"
+    else:
+        return False, (
+            f"{label}: fingerprint MISMATCH – "
+            f"DNS: {dns_hex[:32]}… / Cert: {computed[:32]}…"
+        )
+
+
+def _check_dane(
+    host: str,
+    port: int,
+    helo_domain: str,
+    sni_hostname: str | None,
+    cert_der: bytes | None,
+    checks: list[CheckResult],
+) -> None:
+    """Look up TLSA records and verify they match the server certificate."""
     tlsa_name = f"_{port}._tcp.{host}"
     records = resolve(tlsa_name, "TLSA")
-
-    # Filter out PKIX-TA(0) and PKIX-EE(1) per spec
-    valid_records = [
-        r for r in records if not (r.startswith("0 ") or r.startswith("1 "))
-    ]
 
     if not records:
         checks.append(
@@ -1662,30 +1780,93 @@ def _check_dane(host: str, port: int, checks: list[CheckResult]) -> None:
         )
         return
 
+    # Separate recommended (DANE-TA=2, DANE-EE=3) from PKIX-only (0,1)
+    recommended = [r for r in records if r.startswith("2 ") or r.startswith("3 ")]
+    pkix_only = [r for r in records if r.startswith("0 ") or r.startswith("1 ")]
+
     checks.append(
         CheckResult(
             name="DANE – TLSA Existence",
-            status=Status.OK if valid_records else Status.WARNING,
-            value=f"{len(valid_records)} valid TLSA record(s)",
-            details=valid_records
-            or [
-                "Only PKIX-TA(0)/PKIX-EE(1) records found; these should not be used for MX."
-            ],
+            status=Status.OK if recommended else Status.WARNING,
+            value=f"{len(records)} TLSA record(s) ({len(recommended)} recommended usage)",
+            details=(
+                recommended + pkix_only
+                if recommended
+                else [
+                    "Only PKIX-TA(0)/PKIX-EE(1) records found; DANE-TA(2) or DANE-EE(3) are required for MX."
+                ]
+            ),
         )
     )
 
-    # Rollover scheme: check for ≥2 records with complementary types
-    if len(valid_records) >= 2:
-        has_ee = any(r.startswith("3 ") for r in valid_records)
-        has_ta = any(r.startswith("2 ") for r in valid_records)
+    if not recommended:
+        return
+
+    # ── Certificate fingerprint verification ─────────────────────────────────
+    # Use the DER from the already-open TLS session if available; otherwise
+    # open a fresh connection just for this check.
+    der = cert_der
+    if der is None:
+        der = _fetch_cert_der(host, port, helo_domain, sni_hostname)
+
+    if der is None:
+        checks.append(
+            CheckResult(
+                name="DANE – Certificate Match",
+                status=Status.WARNING,
+                details=[
+                    "Could not retrieve server certificate to verify TLSA fingerprints."
+                ],
+            )
+        )
+    else:
+        match_results: list[tuple[bool, str]] = [
+            _verify_tlsa_record(r, der) for r in recommended
+        ]
+        any_match = any(ok for ok, _ in match_results)
+        n_match = sum(ok for ok, _ in match_results)
+        detail_lines = [desc for _, desc in match_results]
+
+        # DANE requires at least one TLSA record to match the current certificate.
+        # Non-matching records are expected and valid — they are pre-published
+        # records for the *next* certificate in a rollover scheme.
+        if any_match:
+            status = Status.OK
+            if n_match < len(match_results):
+                detail_lines.append(
+                    f"{len(match_results) - n_match} non-matching record(s) are pre-published "
+                    "for the next certificate (rollover) — this is expected and correct."
+                )
+        else:
+            status = Status.ERROR
+            detail_lines.append(
+                "No TLSA record matches the server certificate. "
+                "Mail delivery via DANE will fail for strict senders."
+            )
+
+        checks.append(
+            CheckResult(
+                name="DANE – Certificate Match",
+                status=status,
+                value=f"{n_match}/{len(match_results)} record(s) match current certificate",
+                details=detail_lines,
+            )
+        )
+
+    # ── Rollover scheme ───────────────────────────────────────────────────────
+    if len(recommended) >= 2:
+        has_ee = any(r.startswith("3 ") for r in recommended)
+        has_ta = any(r.startswith("2 ") for r in recommended)
         if has_ee and has_ta:
-            rollover_note = "Current + Issuer CA scheme (3 x x + 2 x x) – recommended."
+            rollover_note = (
+                "Current + Issuer CA scheme (DANE-EE + DANE-TA) – recommended."
+            )
             rollover_status = Status.OK
-        elif sum(1 for r in valid_records if r.startswith("3 ")) >= 2:
-            rollover_note = "Current + Next scheme (3 x x + 3 x x) – recommended."
+        elif sum(1 for r in recommended if r.startswith("3 ")) >= 2:
+            rollover_note = "Current + Next scheme (DANE-EE + DANE-EE) – recommended."
             rollover_status = Status.OK
         else:
-            rollover_note = "Rollover scheme present but uses non-standard types."
+            rollover_note = "Rollover scheme uses non-standard type combination."
             rollover_status = Status.WARNING
         checks.append(
             CheckResult(
@@ -1841,7 +2022,22 @@ def check_smtp(
     _check_caa(host, result.checks)
 
     # --- DANE ---
-    _check_dane(host, port, result.checks)
+    # Pass the raw cert DER from the TLS probe so DANE can verify fingerprints
+    # without opening yet another connection.
+    _cert_der_for_dane = (
+        result.tls._cert_der  # type: ignore[attr-defined]
+        if result.tls and hasattr(result.tls, "_cert_der")
+        else None
+    )
+    _sni_for_dane: str | None = None
+    if has_starttls:
+        try:
+            _sni_for_dane = sni_hostname  # set inside the has_starttls block above
+        except NameError:
+            pass
+    _check_dane(
+        host, port, helo_domain, _sni_for_dane, _cert_der_for_dane, result.checks
+    )
 
     return result
 
