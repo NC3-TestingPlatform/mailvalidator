@@ -266,25 +266,28 @@ def _probe_tls(
         details.cert_pubkey_bits = info.get("pubkey_bits", 0)
         details.cert_pubkey_curve = info.get("pubkey_curve", "")
 
-        # Trust: try verifying with system trust store.
-        # SNI and hostname checking only work for DNS names, not bare IPs.
+        # Trust: verify the certificate chain by doing the full STARTTLS
+        # handshake with a verifying context.  A bare wrap_socket() on port 25
+        # fails with WRONG_VERSION_NUMBER because the server speaks SMTP, not
+        # raw TLS.  SNI and hostname checking only work for DNS names.
         if sni_hostname:
             try:
                 verify_ctx = _starttls_context(verify=True)
                 verify_ctx.check_hostname = True
                 verify_ctx.verify_mode = ssl.CERT_REQUIRED
-                with socket.create_connection((host, port), timeout=_TIMEOUT) as raw:
-                    # Need a plain TCP socket; re-do the STARTTLS dance here
-                    # is too complex – just wrap the raw TCP socket directly.
-                    # This only verifies the *certificate chain*, not STARTTLS.
-                    with verify_ctx.wrap_socket(raw, server_hostname=sni_hostname):
-                        pass
+                verify_smtp = smtplib.SMTP(timeout=_TIMEOUT)
+                _code2, _msg2 = verify_smtp.connect(host, port)
+                verify_smtp.ehlo(helo_domain)
+                verify_smtp._host = sni_hostname  # type: ignore[attr-defined]
+                verify_smtp.starttls(context=verify_ctx)
+                try:
+                    verify_smtp.quit()
+                except Exception:
+                    pass
                 details.cert_trusted = True
-            except ssl.SSLCertVerificationError as e:
-                print("1", e)
+            except ssl.SSLCertVerificationError:
                 details.cert_trusted = False
-            except OSError as e:
-                print("2", e)
+            except (OSError, smtplib.SMTPException):
                 details.cert_trusted = False
         else:
             # Cannot verify trust for IP-addressed hosts via SNI.
@@ -295,9 +298,15 @@ def _probe_tls(
         details.secure_renegotiation = (
             raw_sock.get_channel_binding("tls-unique") is not None
         )
-    except Exception as e:
-        print("3", e)
+    except Exception:
         details.secure_renegotiation = None
+
+    # 0-RTT: only relevant for TLS 1.3
+    if tls_ver == "TLSv1.3":
+        # Python's ssl module does not expose early-data; mark as not detectable.
+        details.zero_rtt = None  # cannot probe without C-level access
+    else:
+        details.zero_rtt = None  # N/A
 
     try:
         smtp.quit()
@@ -1390,6 +1399,24 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
     )
 
 
+def _check_zero_rtt(details: TLSDetails, checks: list[CheckResult]) -> None:
+    if details.tls_version != "TLSv1.3":
+        checks.append(
+            CheckResult(name="0-RTT", status=Status.NA, value="N/A (TLS < 1.3)")
+        )
+        return
+    # Python's ssl module does not expose early-data session ticket max_early_data.
+    checks.append(
+        CheckResult(
+            name="0-RTT",
+            status=Status.INFO,
+            details=[
+                "Python ssl does not expose early-data ticket size. Use an external tool (e.g. testssl.sh) to probe 0-RTT."
+            ],
+        )
+    )
+
+
 def _check_certificate(
     details: TLSDetails, checks: list[CheckResult], host: str
 ) -> None:
@@ -1807,6 +1834,7 @@ def check_smtp(
             _check_hash_function(tls_details, result.checks)
             _check_compression(tls_details, result.checks)
             _check_renegotiation(tls_details, result.checks)
+            _check_zero_rtt(tls_details, result.checks)
             _check_certificate(tls_details, result.checks, host)
 
     # --- CAA records ---
