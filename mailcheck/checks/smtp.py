@@ -1,4 +1,27 @@
-"""SMTP diagnostics: banner, PTR, open relay, STARTTLS, and deep TLS inspection."""
+"""SMTP diagnostics: connectivity, PTR, open relay, STARTTLS, and deep TLS inspection.
+
+Checks performed
+----------------
+Plain SMTP
+  • Connect + banner latency
+  • Reverse DNS (PTR) for the server IP
+  • STARTTLS advertisement
+  • Open relay
+
+TLS (when STARTTLS is available)
+  • Accepted TLS versions (active per-version probe)
+  • Accepted cipher suites per version, in server-preference order
+  • Server cipher-preference enforcement and prescribed ordering
+  • Key exchange mechanism and group/curve
+  • Key-exchange hash function
+  • TLS compression (CRIME)
+  • Secure renegotiation (RFC 5746)
+  • Certificate trust chain, public key, signature, domain match, and expiry
+
+DNS
+  • CAA records (walks up the DNS hierarchy)
+  • DANE/TLSA existence, fingerprint match, and rollover scheme
+"""
 
 from __future__ import annotations
 
@@ -8,37 +31,48 @@ import smtplib
 import socket
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mailcheck.dns_utils import resolve
-from mailcheck.dns_utils import reverse_lookup
+from mailcheck.dns_utils import resolve, reverse_lookup
 from mailcheck.models import CheckResult, SMTPDiagResult, Status, TLSDetails
 
-_TIMEOUT = 10  # seconds
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+_TIMEOUT = 10  # seconds per blocking network call
 
 # ---------------------------------------------------------------------------
-# Cipher classification tables
+# Cipher classification  (NCSC-NL "IT Security Guidelines for TLS" v2.1)
 # ---------------------------------------------------------------------------
+# Tier    Criteria
+# ------  -----------------------------------------------------------------
+# Good        Forward-secret AEAD + strong key exchange
+# Sufficient  Forward secret but CBC mode, or DHE with larger overhead
+# Phase-out   No forward secrecy (RSA key exchange) or weak block cipher
+# Insufficient Anything else (exported, NULL, eNULL, …)
 
 _GOOD_CIPHERS: frozenset[str] = frozenset(
     {
-        # TLS 1.2 ECDHE-ECDSA
-        "ECDHE-ECDSA-AES256-GCM-SHA384",
-        "ECDHE-ECDSA-CHACHA20-POLY1305",
-        "ECDHE-ECDSA-AES128-GCM-SHA256",
-        # TLS 1.2 ECDHE-RSA
-        "ECDHE-RSA-AES256-GCM-SHA384",
-        "ECDHE-RSA-CHACHA20-POLY1305",
-        "ECDHE-RSA-AES128-GCM-SHA256",
-        # TLS 1.3 standard suite names
+        # TLS 1.3 – always AEAD + ephemeral ECDHE (RFC 8446)
         "TLS_AES_256_GCM_SHA384",
         "TLS_CHACHA20_POLY1305_SHA256",
         "TLS_AES_128_GCM_SHA256",
+        # TLS 1.2 – ECDHE-ECDSA + AEAD
+        "ECDHE-ECDSA-AES256-GCM-SHA384",
+        "ECDHE-ECDSA-CHACHA20-POLY1305",
+        "ECDHE-ECDSA-AES128-GCM-SHA256",
+        # TLS 1.2 – ECDHE-RSA + AEAD
+        "ECDHE-RSA-AES256-GCM-SHA384",
+        "ECDHE-RSA-CHACHA20-POLY1305",
+        "ECDHE-RSA-AES128-GCM-SHA256",
     }
 )
 
 _SUFFICIENT_CIPHERS: frozenset[str] = frozenset(
     {
+        # ECDHE without AEAD (CBC + HMAC)
         "ECDHE-ECDSA-AES256-SHA384",
         "ECDHE-ECDSA-AES256-SHA",
         "ECDHE-ECDSA-AES128-SHA256",
@@ -47,6 +81,7 @@ _SUFFICIENT_CIPHERS: frozenset[str] = frozenset(
         "ECDHE-RSA-AES256-SHA",
         "ECDHE-RSA-AES128-SHA256",
         "ECDHE-RSA-AES128-SHA",
+        # DHE-RSA (forward-secret but higher CPU overhead)
         "DHE-RSA-AES256-GCM-SHA384",
         "DHE-RSA-CHACHA20-POLY1305",
         "DHE-RSA-AES128-GCM-SHA256",
@@ -59,25 +94,24 @@ _SUFFICIENT_CIPHERS: frozenset[str] = frozenset(
 
 _PHASE_OUT_CIPHERS: frozenset[str] = frozenset(
     {
-        "ECDHE-ECDSA-DES-CBC3-SHA",
-        "ECDHE-RSA-DES-CBC3-SHA",
-        "DHE-RSA-DES-CBC3-SHA",
+        # RSA key exchange – no forward secrecy
         "AES256-GCM-SHA384",
         "AES128-GCM-SHA256",
         "AES256-SHA256",
         "AES256-SHA",
         "AES128-SHA256",
         "AES128-SHA",
+        # 3DES – 64-bit block cipher (Sweet32 vulnerability)
+        "ECDHE-ECDSA-DES-CBC3-SHA",
+        "ECDHE-RSA-DES-CBC3-SHA",
+        "DHE-RSA-DES-CBC3-SHA",
         "DES-CBC3-SHA",
     }
 )
 
-# ---------------------------------------------------------------------------
-# Key-exchange parameter classification
-# ---------------------------------------------------------------------------
-
 
 def _classify_cipher(name: str) -> Status:
+    """Map a cipher name to its security tier."""
     if name in _GOOD_CIPHERS:
         return Status.GOOD
     if name in _SUFFICIENT_CIPHERS:
@@ -87,7 +121,13 @@ def _classify_cipher(name: str) -> Status:
     return Status.INSUFFICIENT
 
 
+# ---------------------------------------------------------------------------
+# TLS version classification
+# ---------------------------------------------------------------------------
+
+
 def _tls_version_status(version: str) -> Status:
+    """Map a TLS version string to its security status."""
     if version == "TLSv1.3":
         return Status.OK
     if version == "TLSv1.2":
@@ -97,28 +137,89 @@ def _tls_version_status(version: str) -> Status:
     return Status.INSUFFICIENT
 
 
+# ---------------------------------------------------------------------------
+# EC curve classification  (NCSC-NL TLS v2.1, table 9)
+# ---------------------------------------------------------------------------
+
+_GOOD_EC_CURVES: frozenset[str] = frozenset(
+    {
+        "secp256r1",
+        "prime256v1",  # same curve, two OpenSSL names
+        "secp384r1",
+        "x448",
+        "x25519",
+    }
+)
+_PHASE_OUT_EC_CURVES: frozenset[str] = frozenset({"secp224r1"})
+
+
+def _classify_ec_curve(curve: str) -> Status:
+    """Classify an EC curve name used for key exchange."""
+    c = curve.lower()
+    if c in _GOOD_EC_CURVES:
+        return Status.GOOD
+    if c in _PHASE_OUT_EC_CURVES:
+        return Status.PHASE_OUT
+    if c:
+        return Status.INSUFFICIENT
+    return Status.INFO  # name unavailable from this Python/OpenSSL build
+
+
+# Kept for test compatibility
+_classify_ec_curve_kex = _classify_ec_curve
+
+
+# ---------------------------------------------------------------------------
+# Shared lookup tables (used by multiple check functions)
+# ---------------------------------------------------------------------------
+
+# Severity rank used to bubble up the worst status across ciphers/versions.
+# INFO is treated as "unknown" and never overrides a real grade.
+_STATUS_RANK: dict[Status, int] = {
+    Status.INFO: -1,
+    Status.GOOD: 0,
+    Status.SUFFICIENT: 1,
+    Status.PHASE_OUT: 2,
+    Status.INSUFFICIENT: 3,
+}
+
+# Icon shown next to each cipher in the detail lines
+_CIPHER_ICON: dict[str, str] = {
+    "GOOD": "✔",
+    "SUFFICIENT": "~",
+    "PHASE_OUT": "↓",
+    "INSUFFICIENT": "✘",
+}
+
+
+# ---------------------------------------------------------------------------
+# Certificate parsing helper
+# ---------------------------------------------------------------------------
+
+
 def _cert_info(der: bytes) -> dict:
-    """Extract certificate metadata via ssl.DER_cert_to_PEM_cert + openssl-style parsing."""
-    # Use the high-level ssl helper where possible; fall back gracefully.
+    """Parse a DER-encoded X.509 certificate and return a flat metadata dict.
+
+    Requires the *cryptography* package (already a project dependency).
+    Returns an empty dict if parsing fails so callers can use .get() safely.
+    """
     try:
         import cryptography.hazmat.primitives.asymmetric.ec as _ec
         import cryptography.hazmat.primitives.asymmetric.rsa as _rsa
         from cryptography import x509
-        from cryptography.hazmat.primitives import hashes
 
         cert = x509.load_der_x509_certificate(der)
-        info: dict = {}
+        info: dict = {
+            "subject": cert.subject.rfc4514_string(),
+            "issuer": cert.issuer.rfc4514_string(),
+            "not_after": cert.not_valid_after_utc.isoformat(),
+            "sig_alg": (
+                cert.signature_hash_algorithm.name
+                if cert.signature_hash_algorithm
+                else "unknown"
+            ),
+        }
 
-        info["subject"] = cert.subject.rfc4514_string()
-        info["issuer"] = cert.issuer.rfc4514_string()
-        info["not_after"] = cert.not_valid_after_utc.isoformat()
-        info["sig_alg"] = (
-            cert.signature_hash_algorithm.name
-            if cert.signature_hash_algorithm
-            else "unknown"
-        )
-
-        # SAN
         try:
             san_ext = cert.extensions.get_extension_for_class(
                 x509.SubjectAlternativeName
@@ -127,54 +228,28 @@ def _cert_info(der: bytes) -> dict:
         except x509.ExtensionNotFound:
             info["san"] = []
 
-        # Public key
         pub = cert.public_key()
         if isinstance(pub, _rsa.RSAPublicKey):
-            info["pubkey_type"] = "RSA"
-            info["pubkey_bits"] = pub.key_size
-            info["pubkey_curve"] = ""
+            info.update(pubkey_type="RSA", pubkey_bits=pub.key_size, pubkey_curve="")
         elif isinstance(pub, _ec.EllipticCurvePublicKey):
-            info["pubkey_type"] = "EC"
-            info["pubkey_bits"] = pub.key_size
-            info["pubkey_curve"] = pub.curve.name
+            info.update(
+                pubkey_type="EC", pubkey_bits=pub.key_size, pubkey_curve=pub.curve.name
+            )
         else:
-            info["pubkey_type"] = type(pub).__name__
-            info["pubkey_bits"] = 0
-            info["pubkey_curve"] = ""
+            info.update(pubkey_type=type(pub).__name__, pubkey_bits=0, pubkey_curve="")
 
         return info
-    except ImportError:
-        # cryptography package not available – return empty dict
+    except Exception:
         return {}
 
 
 # ---------------------------------------------------------------------------
-# TLS probe: performs STARTTLS and deep-inspects the session
+# Low-level SMTP / TLS primitives
 # ---------------------------------------------------------------------------
 
 
-def _connect_plain(host: str, port: int) -> tuple[smtplib.SMTP, float, str]:
-    """Plain SMTP connect; returns (smtp, elapsed_ms, banner)."""
-    t0 = time.monotonic()
-    smtp = smtplib.SMTP(timeout=_TIMEOUT)
-    _code, msg = smtp.connect(host, port)
-    elapsed = (time.monotonic() - t0) * 1000
-    banner = msg.decode(errors="replace") if isinstance(msg, bytes) else str(msg)
-    return smtp, elapsed, banner
-
-
-def _starttls_context(verify: bool = True) -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    if not verify:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
 def _is_ip(host: str) -> bool:
-    """Return True if *host* is a bare IP address (v4 or v6)."""
-    import ipaddress
-
+    """Return True if *host* is a bare IPv4 or IPv6 address (not a hostname)."""
     try:
         ipaddress.ip_address(host)
         return True
@@ -182,83 +257,164 @@ def _is_ip(host: str) -> bool:
         return False
 
 
+def _connect_plain(host: str, port: int) -> tuple[smtplib.SMTP, float, str]:
+    """Open a plain TCP connection and return (smtp, connect_ms, banner).
+
+    Raises OSError / SMTPException on failure; callers are expected to catch.
+    """
+    t0 = time.monotonic()
+    smtp = smtplib.SMTP(timeout=_TIMEOUT)
+    _code, msg = smtp.connect(host, port)
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    banner = msg.decode(errors="replace") if isinstance(msg, bytes) else str(msg)
+    return smtp, elapsed_ms, banner
+
+
+def _no_verify_ctx(
+    tls_min: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2,
+    tls_max: ssl.TLSVersion = ssl.TLSVersion.TLSv1_3,
+) -> ssl.SSLContext:
+    """Return a TLS_CLIENT context that accepts any certificate.
+
+    Used for diagnostic probes where we inspect the cert ourselves rather
+    than relying on the system trust store.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = tls_min
+    ctx.maximum_version = tls_max
+    return ctx
+
+
+def _set_sni(smtp: smtplib.SMTP, sni_hostname: str | None, fallback: str) -> None:
+    """Set smtp._host so that smtplib passes the correct SNI server_hostname.
+
+    smtplib reads smtp._host when building the ssl.wrap_socket() call.
+    When SMTP() is constructed without a host argument (our pattern: SMTP()
+    then .connect()), _host may be empty, which raises
+    "server_hostname cannot be empty" on Python ≥ 3.13.
+    """
+    smtp._host = sni_hostname if sni_hostname else fallback  # type: ignore[attr-defined]
+
+
+def _starttls_and_get_cipher(
+    host: str,
+    port: int,
+    helo_domain: str,
+    sni_hostname: str | None,
+    ctx: ssl.SSLContext,
+) -> str | None:
+    """Perform a STARTTLS handshake with *ctx* and return the negotiated cipher name.
+
+    Returns None on any failure (connection refused, STARTTLS absent, SSL error).
+    Cleans up the socket whether or not the handshake succeeds.
+    """
+    try:
+        smtp, _, _ = _connect_plain(host, port)
+    except (OSError, smtplib.SMTPException):
+        return None
+    try:
+        smtp.ehlo(helo_domain)
+        if not smtp.has_extn("STARTTLS"):
+            smtp.quit()
+            return None
+        _set_sni(smtp, sni_hostname, host)
+        smtp.starttls(context=ctx)
+        info = smtp.sock.cipher()  # type: ignore[union-attr]
+        smtp.quit()
+        return info[0] if info else None
+    except Exception:
+        try:
+            smtp.close()
+        except Exception:
+            pass
+        return None
+
+
+# ---------------------------------------------------------------------------
+# TLS probe – collects deep session metadata via STARTTLS
+# ---------------------------------------------------------------------------
+
+
 def _probe_tls(
-    host: str, port: int, helo_domain: str
+    host: str,
+    port: int,
+    helo_domain: str,
 ) -> tuple[TLSDetails | None, str, str | None]:
-    """Connect, STARTTLS, and return (TLSDetails, error_message)."""
+    """Connect via STARTTLS and collect session metadata into a TLSDetails object.
+
+    Returns (details, error_message, sni_hostname).
+    On failure, details is None and error_message is non-empty.
+
+    SNI note
+    --------
+    SNI requires a DNS hostname, not an IP address.  For bare IPs we set
+    sni_hostname=None and disable check_hostname on the context, because
+    Python ssl rejects an empty server_hostname string (raised as ValueError
+    on Python ≥ 3.13).
+
+    Certificate trust note
+    ----------------------
+    We verify the trust chain with a second, fully-verifying STARTTLS
+    handshake rather than a bare wrap_socket() call.  A plain wrap_socket()
+    on port 25 fails with WRONG_VERSION_NUMBER because the server speaks SMTP
+    (not raw TLS) until STARTTLS is negotiated.
+    """
+    sni_hostname: str | None = None if _is_ip(host) else host
     details = TLSDetails()
 
-    # SNI requires a hostname, not an IP address.
-    # If the caller passes an IP we skip SNI (server_hostname=None is not
-    # accepted by Python ssl either, so we use an unverified context without
-    # check_hostname in that case).
-    sni_hostname: str | None = None if _is_ip(host) else host
-
-    # --- plain connect ---
+    # Plain connect
     try:
         smtp, _, _ = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException) as exc:
         return None, str(exc), None
 
-    # --- EHLO + STARTTLS upgrade ---
+    # EHLO + STARTTLS upgrade (no certificate verification; we inspect manually)
     try:
         smtp.ehlo(helo_domain)
         if not smtp.has_extn("STARTTLS"):
             smtp.quit()
             return None, "STARTTLS not advertised", None
 
-        ctx = _starttls_context(verify=False)  # we inspect the cert ourselves
-        if sni_hostname:
-            # Ensure smtplib uses the correct server_hostname for SNI.
-            # smtp._host may be empty when the object was constructed without
-            # an initial host argument (e.g. SMTP() then .connect()).
-            smtp._host = sni_hostname  # type: ignore[attr-defined]
-        else:
-            # IP address: disable hostname checking entirely so wrap_socket
-            # does not raise "server_hostname cannot be an empty string".
-            ctx.check_hostname = False
-            smtp._host = host  # type: ignore[attr-defined]
-
+        ctx = _no_verify_ctx()
+        if not sni_hostname:
+            ctx.check_hostname = False  # required when SNI is skipped
+        _set_sni(smtp, sni_hostname, host)
         smtp.starttls(context=ctx)
-        smtp.ehlo(helo_domain)
+        smtp.ehlo(helo_domain)  # re-EHLO to discover post-TLS capabilities
     except (smtplib.SMTPException, ValueError) as exc:
         return None, f"STARTTLS failed: {exc}", None
 
-    # --- inspect the live SSL socket ---
-    raw_sock = smtp.sock
-    if not isinstance(raw_sock, ssl.SSLSocket):
+    raw = smtp.sock
+    if not isinstance(raw, ssl.SSLSocket):
         smtp.quit()
         return None, "Socket is not an SSLSocket after STARTTLS", None
 
-    tls_ver = raw_sock.version() or ""
-    details.tls_version = tls_ver
+    # --- Session metadata ---
+    details.tls_version = raw.version() or ""
 
-    cipher_info = raw_sock.cipher()  # (name, protocol, bits)
+    cipher_info = raw.cipher()  # (name, protocol_version, key_bits)
     if cipher_info:
         details.cipher_name = cipher_info[0]
         details.cipher_bits = cipher_info[2] or 0
 
-    # compression
-    details.compression = raw_sock.compression() or ""
+    details.compression = raw.compression() or ""
 
-    # DH / key exchange group
+    # Key-exchange group (available via the internal _sslobj.group() on some
+    # CPython + OpenSSL builds; absent on others – fail silently).
     try:
-        # Available in Python 3.10+ via ssl.SSLSocket.get_channel_binding or
-        # internal _ssl – use the safer public API where possible.
-        kex = getattr(raw_sock, "_sslobj", None)
-        if kex:
-            group = getattr(kex, "group", None)
-            if callable(group):
-                details.dh_group = group() or ""
+        sslobj = getattr(raw, "_sslobj", None)
+        group_fn = getattr(sslobj, "group", None) if sslobj else None
+        if callable(group_fn):
+            details.dh_group = group_fn() or ""
     except Exception:
         pass
 
-    # certificate
-    der = raw_sock.getpeercert(binary_form=True)
+    # --- Certificate ---
+    der = raw.getpeercert(binary_form=True)
     if der:
-        details._cert_der = (
-            der  # stash for DANE verification  # type: ignore[attr-defined]
-        )
+        details._cert_der = der  # type: ignore[attr-defined]  # stashed for DANE reuse
         info = _cert_info(der)
         details.cert_subject = info.get("subject", "")
         details.cert_issuer = info.get("issuer", "")
@@ -269,17 +425,13 @@ def _probe_tls(
         details.cert_pubkey_bits = info.get("pubkey_bits", 0)
         details.cert_pubkey_curve = info.get("pubkey_curve", "")
 
-        # Trust: verify the certificate chain by doing the full STARTTLS
-        # handshake with a verifying context.  A bare wrap_socket() on port 25
-        # fails with WRONG_VERSION_NUMBER because the server speaks SMTP, not
-        # raw TLS.  SNI and hostname checking only work for DNS names.
+        # Trust: attempt a second STARTTLS with full certificate verification.
+        # SNI hostname checking is only meaningful for DNS names.
         if sni_hostname:
             try:
-                verify_ctx = _starttls_context(verify=True)
-                verify_ctx.check_hostname = True
-                verify_ctx.verify_mode = ssl.CERT_REQUIRED
+                verify_ctx = ssl.create_default_context()
                 verify_smtp = smtplib.SMTP(timeout=_TIMEOUT)
-                _code2, _msg2 = verify_smtp.connect(host, port)
+                verify_smtp.connect(host, port)
                 verify_smtp.ehlo(helo_domain)
                 verify_smtp._host = sni_hostname  # type: ignore[attr-defined]
                 verify_smtp.starttls(context=verify_ctx)
@@ -288,19 +440,15 @@ def _probe_tls(
                 except Exception:
                     pass
                 details.cert_trusted = True
-            except ssl.SSLCertVerificationError:
-                details.cert_trusted = False
-            except (OSError, smtplib.SMTPException):
+            except (ssl.SSLCertVerificationError, OSError, smtplib.SMTPException):
                 details.cert_trusted = False
         else:
-            # Cannot verify trust for IP-addressed hosts via SNI.
-            details.cert_trusted = False
+            details.cert_trusted = False  # cannot verify trust for bare IP addresses
 
-    # secure renegotiation flag (RI extension)
+    # Secure renegotiation: presence of the tls-unique channel binding implies
+    # the RFC 5746 Renegotiation Info extension was exchanged.
     try:
-        details.secure_renegotiation = (
-            raw_sock.get_channel_binding("tls-unique") is not None
-        )
+        details.secure_renegotiation = raw.get_channel_binding("tls-unique") is not None
     except Exception:
         details.secure_renegotiation = None
 
@@ -313,29 +461,19 @@ def _probe_tls(
 
 
 # ---------------------------------------------------------------------------
-# Check functions
+# TLS version probing
+#
+# Strategy: pin minimum_version = maximum_version = target and attempt STARTTLS.
+#
+# TLS 1.0 / 1.1 require SECLEVEL=0 on the client context.  Modern OpenSSL
+# defaults to SECLEVEL=2, which rejects the weak ciphers those versions need.
+# Without lowering it, handshakes fail on our side and the server is falsely
+# reported as "not supported".  This is the same approach used by testssl.sh.
+#
+# TLS 1.0/1.1 entries are added only when the runtime OpenSSL exposes them
+# (they are compiled out on hardened builds such as Fedora/RHEL).
 # ---------------------------------------------------------------------------
 
-# TLS version probe table.
-# Strategy:
-#   TLS 1.2 / 1.3  →  Python ssl (minimum_version = maximum_version = target).
-#   TLS 1.0 / 1.1  →  `openssl s_client` with a permissive temporary
-#                      OPENSSL_CONF (MinProtocol=TLSv1 + SECLEVEL=0).
-#
-# Why the split?  System-wide OpenSSL policy (SECLEVEL=2 / MinProtocol=TLSv1.2,
-# compiled in as OPENSSL_TLS_SECURITY_LEVEL=2 on Debian/Ubuntu) prevents Python
-# from *locally* negotiating TLS < 1.2 even when the remote server supports it.
-# Neither minimum_version/maximum_version nor OP_NO_* flags can override that
-# compiled-in policy from Python.  Spawning openssl s_client with a custom
-# OPENSSL_CONF is the same approach testssl.sh uses, so results match.
-
-# (label, ssl.TLSVersion min/max)
-# set_ciphers("DEFAULT:@SECLEVEL=0") is applied to every probe so that
-# the weak ciphers required by TLS 1.0/1.1 are permitted on the *client*
-# side regardless of the local OpenSSL system policy (SECLEVEL=2 on most
-# modern distros).  Without it, the handshake fails locally and the server
-# is falsely reported as not supporting the version.
-# TLS 1.0/1.1 are included only when the runtime OpenSSL exposes them.
 _TLS_VERSION_PROBES: list[tuple[str, ssl.TLSVersion, ssl.TLSVersion]] = [
     ("TLSv1.3", ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
     ("TLSv1.2", ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
@@ -345,16 +483,11 @@ for _label, _attr in (("TLSv1.1", "TLSv1_1"), ("TLSv1", "TLSv1")):
         _v = getattr(ssl.TLSVersion, _attr)
         _TLS_VERSION_PROBES.append((_label, _v, _v))
 
-
-# Versions that require SECLEVEL=0 to allow their weak ciphers on the client.
-# Modern OpenSSL defaults to SECLEVEL=2 which rejects the ciphers used by
-# TLS 1.0/1.1; without lowering it, the handshake fails on our side and we
-# would falsely report the server as not supporting these versions.
+# Versions whose weak ciphers require SECLEVEL=0 to be accepted locally.
 _LEGACY_TLS_VERSIONS: frozenset[ssl.TLSVersion] = frozenset(
-    v
+    getattr(ssl.TLSVersion, attr)
     for attr in ("TLSv1", "TLSv1_1")
     if hasattr(ssl.TLSVersion, attr)
-    for v in (getattr(ssl.TLSVersion, attr),)
 )
 
 
@@ -366,8 +499,7 @@ def _probe_single_tls_version(
     tls_min: ssl.TLSVersion,
     tls_max: ssl.TLSVersion,
 ) -> bool:
-    """Return True if the server accepts a STARTTLS handshake restricted to
-    exactly the requested TLS version range."""
+    """Return True if the server completes STARTTLS at exactly this TLS version."""
     try:
         smtp, _, _ = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException):
@@ -378,21 +510,14 @@ def _probe_single_tls_version(
             smtp.quit()
             return False
 
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        ctx.minimum_version = tls_min
-        ctx.maximum_version = tls_max
-
-        # Lower SECLEVEL only for legacy versions that need weak ciphers.
-        # Applying this to TLS 1.2/1.3 probes would mask cipher misconfigs.
+        ctx = _no_verify_ctx(tls_min, tls_max)
         if tls_min in _LEGACY_TLS_VERSIONS:
             try:
                 ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
             except ssl.SSLError:
-                pass  # older OpenSSL that does not recognise SECLEVEL syntax
+                pass  # older OpenSSL without SECLEVEL directive support
 
-        smtp._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
+        _set_sni(smtp, sni_hostname, host)
         smtp.starttls(context=ctx)
         smtp.quit()
         return True
@@ -412,104 +537,100 @@ def _check_tls_version(
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
-    """Actively probe which TLS versions the server accepts."""
-
-    # Summarise what the best negotiated version was (from _probe_tls)
-    negotiated = details.tls_version
-
+    """Probe each TLS version individually and report which ones are accepted."""
     accepted: list[str] = []
     rejected: list[str] = []
 
     for label, tls_min, tls_max in _TLS_VERSION_PROBES:
-        ok = _probe_single_tls_version(
+        if _probe_single_tls_version(
             host, port, helo_domain, sni_hostname, tls_min, tls_max
-        )
-        if ok:
+        ):
             accepted.append(label)
         else:
             rejected.append(label)
 
-    # Overall verdict: fail if any phase-out/insufficient version is accepted
     phase_out_accepted = [
         v for v in accepted if _tls_version_status(v) == Status.PHASE_OUT
     ]
     insufficient_accepted = [
         v for v in accepted if _tls_version_status(v) == Status.INSUFFICIENT
     ]
-    good_accepted = [v for v in accepted if _tls_version_status(v) == Status.OK]
-    sufficient_accepted = [
-        v for v in accepted if _tls_version_status(v) == Status.SUFFICIENT
-    ]
 
     if insufficient_accepted:
         overall = Status.INSUFFICIENT
     elif phase_out_accepted:
         overall = Status.PHASE_OUT
-    elif good_accepted:
+    elif any(_tls_version_status(v) == Status.OK for v in accepted):
         overall = Status.GOOD
-    elif sufficient_accepted:
+    elif any(_tls_version_status(v) == Status.SUFFICIENT for v in accepted):
         overall = Status.SUFFICIENT
     else:
-        overall = Status.INFO  # could not determine (all probes blocked/failed)
+        overall = Status.INFO  # all probes failed or were blocked
 
-    detail_lines: list[str] = []
-    for v in accepted:
-        st = _tls_version_status(v)
-        marker = {
-            "OK": "✔",
-            "GOOD": "✔",
-            "PHASE_OUT": "↓ phase-out",
-            "INSUFFICIENT": "✘ insecure",
-        }.get(st.value, "✔")
-        detail_lines.append(f"  {marker}  {v} – accepted")
-    for v in rejected:
-        detail_lines.append(f"  –  {v} – not accepted")
-
+    _MARKER = {
+        "OK": "✔",
+        "SUFFICIENT": "✔",
+        "PHASE_OUT": "↓ phase-out",
+        "INSUFFICIENT": "✘ insecure",
+    }
+    detail_lines = [
+        f"  {_MARKER.get(_tls_version_status(v).value, '✔')}  {v} – accepted"
+        for v in accepted
+    ] + [f"  –  {v} – not accepted" for v in rejected]
     if phase_out_accepted:
         detail_lines.append(
-            f"Disable: {', '.join(phase_out_accepted)} – deprecated protocol(s) accepted."
+            f"Disable: {', '.join(phase_out_accepted)} – deprecated protocol(s) still accepted."
         )
     if insufficient_accepted:
         detail_lines.append(
-            f"CRITICAL – disable: {', '.join(insufficient_accepted)} – insecure protocol(s) accepted."
+            f"CRITICAL – disable immediately: {', '.join(insufficient_accepted)} – insecure protocol(s) accepted."
         )
 
     checks.append(
         CheckResult(
             name="TLS Versions",
             status=overall,
-            value=f"Best: {negotiated}" if negotiated else "negotiated version unknown",
+            value=f"Best: {details.tls_version}"
+            if details.tls_version
+            else "negotiated version unknown",
             details=detail_lines,
         )
     )
 
 
 # ---------------------------------------------------------------------------
-# Cipher enumeration helpers
+# Cipher enumeration
+#
+# OpenSSL uses two separate APIs for cipher selection:
+#   • TLS 1.3 suites  →  SSL_CTX_set_ciphersuites   (Python: set_ciphersuites())
+#   • TLS ≤1.2 ciphers →  SSL_CTX_set_cipher_list    (Python: set_ciphers())
+#
+# Mixing them causes errors:
+#   set_ciphers("TLS_AES_256_GCM_SHA384")  →  SSLError: No cipher can be selected
+#   set_ciphersuites(…) may raise AttributeError on older OpenSSL builds
+#
+# We therefore handle TLS 1.3 and TLS ≤1.2 via separate code paths.
 # ---------------------------------------------------------------------------
 
-# TLS 1.3 ciphersuites are controlled by a completely separate OpenSSL API
-# (SSL_CTX_set_ciphersuites) from TLS 1.2 ciphers (SSL_CTX_set_cipher_list).
-# Python exposes these as set_ciphersuites() vs set_ciphers() respectively.
-# Keeping the two lists separate prevents TLS 1.2 ciphers from bleeding into
-# TLS 1.3 probes (and vice-versa).
-
+# TLS 1.3 standard ciphersuites (RFC 8446 §B.4), in recommended priority order.
 _TLS13_CIPHERSUITES: list[str] = [
     "TLS_AES_256_GCM_SHA384",
     "TLS_CHACHA20_POLY1305_SHA256",
     "TLS_AES_128_GCM_SHA256",
 ]
 
+# TLS ≤1.2 candidate list, ordered Good → Sufficient → Phase-out so that the
+# server-order reconstruction phase starts from a sensible initial ordering.
 _TLS12_AND_BELOW_CIPHERS: list[str] = [
-    # Good – ECDHE-ECDSA
+    # Good – ECDHE-ECDSA + AEAD
     "ECDHE-ECDSA-AES256-GCM-SHA384",
     "ECDHE-ECDSA-CHACHA20-POLY1305",
     "ECDHE-ECDSA-AES128-GCM-SHA256",
-    # Good – ECDHE-RSA
+    # Good – ECDHE-RSA + AEAD
     "ECDHE-RSA-AES256-GCM-SHA384",
     "ECDHE-RSA-CHACHA20-POLY1305",
     "ECDHE-RSA-AES128-GCM-SHA256",
-    # Sufficient – ECDHE
+    # Sufficient – ECDHE + CBC
     "ECDHE-ECDSA-AES256-SHA384",
     "ECDHE-ECDSA-AES256-SHA",
     "ECDHE-ECDSA-AES128-SHA256",
@@ -526,69 +647,55 @@ _TLS12_AND_BELOW_CIPHERS: list[str] = [
     "DHE-RSA-AES256-SHA",
     "DHE-RSA-AES128-SHA256",
     "DHE-RSA-AES128-SHA",
-    # Phase-out
-    "ECDHE-ECDSA-DES-CBC3-SHA",
-    "ECDHE-RSA-DES-CBC3-SHA",
-    "DHE-RSA-DES-CBC3-SHA",
+    # Phase-out – RSA key exchange (no forward secrecy)
     "AES256-GCM-SHA384",
     "AES128-GCM-SHA256",
     "AES256-SHA256",
     "AES256-SHA",
     "AES128-SHA256",
     "AES128-SHA",
+    # Phase-out – 3DES (Sweet32)
+    "ECDHE-ECDSA-DES-CBC3-SHA",
+    "ECDHE-RSA-DES-CBC3-SHA",
+    "DHE-RSA-DES-CBC3-SHA",
     "DES-CBC3-SHA",
 ]
 
-# Unified list kept for backward-compat (classify helpers, flat dedup, etc.)
+# Flat union, used by helpers that need to reference both lists.
 _ALL_KNOWN_CIPHERS: list[str] = _TLS13_CIPHERSUITES + _TLS12_AND_BELOW_CIPHERS
 
 
-def _make_starttls_ctx(
+def _make_cipher_probe_ctx(
     cipher: str,
     tls_min: ssl.TLSVersion,
     tls_max: ssl.TLSVersion,
     seclevel0: bool = False,
 ) -> ssl.SSLContext:
-    """Build a no-verify SSLContext restricted to one cipher and version range.
+    """Build a no-verify SSLContext restricted to a single cipher and version range.
 
-    TLS 1.3 special-casing
-    ----------------------
-    Python's ssl.SSLContext.set_ciphers() rejects TLS 1.3 suite names on most
-    builds ("No cipher can be selected."), and set_ciphersuites() is absent on
-    older OpenSSL versions.  However, a context pinned to TLS 1.3 via
-    minimum_version = maximum_version = TLSv1_3 already contains only the
-    three standard TLS 1.3 suites — the version pin IS the restriction.
-    Individual-suite probing is therefore not meaningful for TLS 1.3; the
-    caller (_enumerate_ciphers_for_version) handles this by doing a single
-    connection and reading which suite was negotiated.
+    TLS 1.3
+    -------
+    A context pinned to TLSv1_3 (min=max) already contains only the three
+    standard TLS 1.3 suites.  Calling set_ciphers() with a TLS 1.3 name
+    raises SSLError on most builds, so we leave the cipher list alone and
+    rely solely on the version pin.  Where set_ciphersuites() is available
+    (newer OpenSSL) the caller uses it directly to isolate individual suites.
 
-    For TLS 1.2 and below we call set_ciphers() for the target cipher and
-    attempt set_ciphersuites("") to disable TLS 1.3 suites (no-op on builds
-    that lack the method).
+    TLS ≤1.2
+    ---------
+    We call set_ciphers() for the target cipher and attempt set_ciphersuites("")
+    to suppress TLS 1.3 suites (no-op on builds that lack the method, which is
+    fine because the version pin already excludes TLS 1.3).
     """
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    ctx.minimum_version = tls_min
-    ctx.maximum_version = tls_max
+    ctx = _no_verify_ctx(tls_min, tls_max)
 
-    is_tls13_only = tls_min == ssl.TLSVersion.TLSv1_3
-
-    if not is_tls13_only:
-        # TLS 1.2 / legacy: restrict to exactly this cipher
+    if tls_min != ssl.TLSVersion.TLSv1_3:
         cipher_str = f"{cipher}:@SECLEVEL=0" if seclevel0 else cipher
-        try:
-            ctx.set_ciphers(cipher_str)
-        except ssl.SSLError:
-            raise
-        # Suppress TLS 1.3 suites where the API is available
+        ctx.set_ciphers(cipher_str)  # raises ssl.SSLError if the name is unknown
         try:
             ctx.set_ciphersuites("")  # type: ignore[attr-defined]
         except (ssl.SSLError, AttributeError):
-            pass  # older OpenSSL — version pin is sufficient
-
-    # For TLS 1.3: no cipher API call needed; the version pin restricts the
-    # context to only the three standard TLS 1.3 suites automatically.
+            pass  # older OpenSSL; version pin is sufficient
 
     return ctx
 
@@ -613,8 +720,8 @@ def _try_cipher(
         if not smtp.has_extn("STARTTLS"):
             smtp.quit()
             return False
-        ctx = _make_starttls_ctx(cipher, tls_min, tls_max, seclevel0=seclevel0)
-        smtp._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
+        ctx = _make_cipher_probe_ctx(cipher, tls_min, tls_max, seclevel0=seclevel0)
+        _set_sni(smtp, sni_hostname, host)
         smtp.starttls(context=ctx)
         smtp.quit()
         return True
@@ -624,6 +731,49 @@ def _try_cipher(
         except Exception:
             pass
         return False
+
+
+def _enumerate_tls13_ciphers(
+    host: str,
+    port: int,
+    helo_domain: str,
+    sni_hostname: str | None,
+) -> list[str]:
+    """Return the accepted TLS 1.3 ciphersuites in server-preference order.
+
+    When set_ciphersuites() is available, each suite is probed in isolation.
+    When unavailable (older OpenSSL), a single connection reveals the server's
+    top preference; all three standard suites are then reported as accepted
+    because we cannot exclude any of them without the API.
+
+    Results are always returned in RFC 8446 standard order (strongest first),
+    which is the order servers are required to enforce.
+    """
+    has_set_ciphersuites = hasattr(
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT), "set_ciphersuites"
+    )
+    accepted: set[str] = set()
+
+    if has_set_ciphersuites:
+        for suite in _TLS13_CIPHERSUITES:
+            ctx = _no_verify_ctx(ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3)
+            ctx.set_ciphersuites(suite)  # type: ignore[attr-defined]
+            negotiated = _starttls_and_get_cipher(
+                host, port, helo_domain, sni_hostname, ctx
+            )
+            if negotiated == suite:
+                accepted.add(suite)
+    else:
+        # Fallback: one connection, note whichever suite the server prefers.
+        ctx = _no_verify_ctx(ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3)
+        negotiated = _starttls_and_get_cipher(
+            host, port, helo_domain, sni_hostname, ctx
+        )
+        if negotiated in _TLS13_CIPHERSUITES:
+            # Cannot isolate individual suites; report all three as accepted.
+            accepted.update(_TLS13_CIPHERSUITES)
+
+    return [s for s in _TLS13_CIPHERSUITES if s in accepted]
 
 
 def _enumerate_ciphers_for_version(
@@ -636,106 +786,24 @@ def _enumerate_ciphers_for_version(
     *,
     max_workers: int = 10,
 ) -> list[str]:
-    """Return all ciphers from *_ALL_KNOWN_CIPHERS* that the server accepts
-    for the given version range, preserving the server's preferred order.
+    """Return accepted ciphers for one TLS version in server-preference order.
 
-    Strategy
-    --------
-    1. Probe all candidates in parallel to build the accepted set (fast).
-    2. Determine server-side ordering: offer pairs (A, B) and (B, A); if the
-       server always picks the same cipher regardless of client preference,
-       it enforces its own order.  We reconstruct that order by repeatedly
-       offering accepted ciphers and noting which one the server picks first.
+    TLS 1.3 is delegated to _enumerate_tls13_ciphers (separate API path).
+
+    TLS ≤1.2 uses two phases:
+      Phase 1 – Parallel acceptance probe: all candidate ciphers are tried
+        concurrently with ThreadPoolExecutor to build the accepted set fast.
+      Phase 2 – Server-order reconstruction: offer the full accepted set;
+        whichever cipher the server negotiates first is its most-preferred.
+        Remove it and repeat until the list is exhausted (or a round fails).
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    if tls_min == ssl.TLSVersion.TLSv1_3:
+        return _enumerate_tls13_ciphers(host, port, helo_domain, sni_hostname)
 
     is_legacy = tls_min in _LEGACY_TLS_VERSIONS
-    is_tls13_only = tls_min == ssl.TLSVersion.TLSv1_3
 
-    # ------------------------------------------------------------------ #
-    # TLS 1.3: individual-suite probing is not possible with Python's ssl  #
-    # (set_ciphers rejects TLS 1.3 names; set_ciphersuites may be absent). #
-    # Strategy: make one connection per suite using set_ciphersuites()     #
-    # where available; where not available make a single connection and    #
-    # report whichever suite was negotiated (server's top preference only).#
-    # ------------------------------------------------------------------ #
-    if is_tls13_only:
-        accepted: set[str] = set()
-        has_set_ciphersuites = hasattr(
-            ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT), "set_ciphersuites"
-        )
-        if has_set_ciphersuites:
-            for suite in _TLS13_CIPHERSUITES:
-                try:
-                    smtp_t, _, _ = _connect_plain(host, port)
-                    try:
-                        smtp_t.ehlo(helo_domain)
-                        if smtp_t.has_extn("STARTTLS"):
-                            ctx_t = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                            ctx_t.check_hostname = False
-                            ctx_t.verify_mode = ssl.CERT_NONE
-                            ctx_t.minimum_version = ssl.TLSVersion.TLSv1_3
-                            ctx_t.maximum_version = ssl.TLSVersion.TLSv1_3
-                            ctx_t.set_ciphersuites(suite)  # type: ignore[attr-defined]
-                            smtp_t._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
-                            smtp_t.starttls(context=ctx_t)
-                            info = smtp_t.sock.cipher()  # type: ignore[union-attr]
-                            if info and info[0] == suite:
-                                accepted.add(suite)
-                        smtp_t.quit()
-                    except Exception:
-                        try:
-                            smtp_t.close()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        else:
-            # Fallback: single connection, report negotiated suite(s)
-            # by iterating: connect, record negotiated suite, that suite
-            # is accepted. We cannot exclude it for next probe without
-            # set_ciphersuites, so just report the one the server prefers.
-            try:
-                smtp_t, _, _ = _connect_plain(host, port)
-                try:
-                    smtp_t.ehlo(helo_domain)
-                    if smtp_t.has_extn("STARTTLS"):
-                        ctx_t = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                        ctx_t.check_hostname = False
-                        ctx_t.verify_mode = ssl.CERT_NONE
-                        ctx_t.minimum_version = ssl.TLSVersion.TLSv1_3
-                        ctx_t.maximum_version = ssl.TLSVersion.TLSv1_3
-                        smtp_t._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
-                        smtp_t.starttls(context=ctx_t)
-                        info = smtp_t.sock.cipher()  # type: ignore[union-attr]
-                        if info and info[0] in _TLS13_CIPHERSUITES:
-                            # Mark all standard suites as accepted since we
-                            # cannot isolate them; note this in ordering phase.
-                            for s in _TLS13_CIPHERSUITES:
-                                accepted.add(s)
-                    smtp_t.quit()
-                except Exception:
-                    try:
-                        smtp_t.close()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        if not accepted:
-            return []
-
-        # TLS 1.3 suites have a fixed server-preferred order by the RFC.
-        # Return them in the standard order (server always prefers strongest).
-        return [s for s in _TLS13_CIPHERSUITES if s in accepted]
-
-    # ------------------------------------------------------------------ #
-    # TLS 1.2 and below: probe each cipher individually in parallel       #
-    # ------------------------------------------------------------------ #
-    candidates = _TLS12_AND_BELOW_CIPHERS
-
-    # --- phase 1: parallel acceptance probe ---
-    accepted2: set[str] = set()
+    # Phase 1: parallel acceptance probe
+    accepted: set[str] = set()
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(
@@ -749,70 +817,44 @@ def _enumerate_ciphers_for_version(
                 tls_max,
                 is_legacy,
             ): c
-            for c in candidates
+            for c in _TLS12_AND_BELOW_CIPHERS
         }
         for fut in as_completed(futures):
-            cipher = futures[fut]
             try:
                 if fut.result():
-                    accepted2.add(cipher)
+                    accepted.add(futures[fut])
             except Exception:
                 pass
 
-    accepted = accepted2
     if not accepted:
         return []
 
-    # --- phase 2: reconstruct server preference order ---
-    # Offer all accepted ciphers to the server; whichever it picks is its
-    # most-preferred.  Remove it, repeat until the list is empty.
+    # Phase 2: reconstruct server-preference order
     remaining = list(accepted)
     ordered: list[str] = []
 
     while remaining:
         if len(remaining) == 1:
-            ordered.append(remaining[0])
+            ordered.append(remaining.pop())
             break
 
         cipher_list = ":".join(remaining)
         if is_legacy:
             cipher_list += ":@SECLEVEL=0"
 
-        # Single connection offering all remaining ciphers
-        chosen: str | None = None
+        ctx = _no_verify_ctx(tls_min, tls_max)
         try:
-            smtp_s, _, _ = _connect_plain(host, port)
-            try:
-                smtp_s.ehlo(helo_domain)
-                if smtp_s.has_extn("STARTTLS"):
-                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    ctx.minimum_version = tls_min
-                    ctx.maximum_version = tls_max
-                    try:
-                        ctx.set_ciphers(cipher_list)
-                    except ssl.SSLError:
-                        pass
-                    smtp_s._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
-                    smtp_s.starttls(context=ctx)
-                    info = smtp_s.sock.cipher()  # type: ignore[union-attr]
-                    if info:
-                        chosen = info[0]
-                smtp_s.quit()
-            except Exception:
-                try:
-                    smtp_s.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            ctx.set_ciphers(cipher_list)
+        except ssl.SSLError:
+            ordered.extend(remaining)
+            break
 
+        chosen = _starttls_and_get_cipher(host, port, helo_domain, sni_hostname, ctx)
         if chosen and chosen in remaining:
             ordered.append(chosen)
             remaining.remove(chosen)
         else:
-            # Could not determine preference; append remainder as-is
+            # Server did not pick any of our candidates (e.g. it closed mid-probe).
             ordered.extend(remaining)
             break
 
@@ -828,18 +870,20 @@ def _detect_server_cipher_order(
     tls_min: ssl.TLSVersion,
     tls_max: ssl.TLSVersion,
 ) -> bool | None:
-    """Return True if the server enforces its own cipher preference.
+    """Return True if the server enforces its own cipher-preference order.
 
-    Technique: offer the same two accepted ciphers in both orders.
-    If the server always picks the same cipher → it has a preference.
-    Returns None if we cannot determine (e.g. fewer than 2 ciphers).
+    Technique: offer the top two accepted ciphers in both orderings (A:B and
+    B:A) and check whether the server always picks the same cipher.  If so,
+    the server has a fixed preference; if not, it mirrors the client order.
 
-    TLS 1.3 note: set_ciphers() rejects TLS 1.3 suite names on most Python/
-    OpenSSL builds.  RFC 8446 mandates that TLS 1.3 servers always enforce
-    their own ciphersuite preference, so we return True unconditionally.
+    TLS 1.3: RFC 8446 §4.2.9 mandates that servers enforce their own
+    ciphersuite preference, so we return True unconditionally without probing
+    (set_ciphers() rejects TLS 1.3 names anyway).
+
+    Returns None when fewer than two ciphers are available to compare.
     """
     if tls_min == ssl.TLSVersion.TLSv1_3:
-        return True  # TLS 1.3 servers are required by RFC 8446 to enforce order
+        return True
 
     if len(accepted) < 2:
         return None
@@ -848,46 +892,50 @@ def _detect_server_cipher_order(
     is_legacy = tls_min in _LEGACY_TLS_VERSIONS
 
     def _pick(first: str, second: str) -> str | None:
-        order = f"{first}:{second}"
+        cipher_list = f"{first}:{second}"
         if is_legacy:
-            order += ":@SECLEVEL=0"
+            cipher_list += ":@SECLEVEL=0"
+        ctx = _no_verify_ctx(tls_min, tls_max)
         try:
-            smtp_o, _, _ = _connect_plain(host, port)
-            try:
-                smtp_o.ehlo(helo_domain)
-                if not smtp_o.has_extn("STARTTLS"):
-                    smtp_o.quit()
-                    return None
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                ctx.minimum_version = tls_min
-                ctx.maximum_version = tls_max
-                try:
-                    ctx.set_ciphers(order)
-                except ssl.SSLError:
-                    return None
-                smtp_o._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
-                smtp_o.starttls(context=ctx)
-                info = smtp_o.sock.cipher()  # type: ignore[union-attr]
-                smtp_o.quit()
-                return info[0] if info else None
-            except Exception:
-                try:
-                    smtp_o.close()
-                except Exception:
-                    pass
-                return None
-        except Exception:
+            ctx.set_ciphers(cipher_list)
+        except ssl.SSLError:
             return None
+        return _starttls_and_get_cipher(host, port, helo_domain, sni_hostname, ctx)
 
     pick_ab = _pick(a, b)
     pick_ba = _pick(b, a)
 
     if pick_ab is None or pick_ba is None:
         return None
-    # Server enforces order if it picks the same cipher regardless of client order
-    return pick_ab == pick_ba
+    return (
+        pick_ab == pick_ba
+    )  # same winner regardless of client order → server enforces
+
+
+# ---------------------------------------------------------------------------
+# Version map: label → (TLSVersion min, TLSVersion max)
+# Built once at import time and shared by _check_cipher / _check_cipher_order.
+# ---------------------------------------------------------------------------
+
+
+def _build_version_map() -> dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]]:
+    m: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = {
+        "TLSv1.3": (ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
+        "TLSv1.2": (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
+    }
+    for attr, label in (("TLSv1_1", "TLSv1.1"), ("TLSv1", "TLSv1")):
+        if hasattr(ssl.TLSVersion, attr):
+            v = getattr(ssl.TLSVersion, attr)
+            m[label] = (v, v)
+    return m
+
+
+_VERSION_MAP: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = _build_version_map()
+
+
+# ---------------------------------------------------------------------------
+# Check: cipher suites
+# ---------------------------------------------------------------------------
 
 
 def _check_cipher(
@@ -898,30 +946,15 @@ def _check_cipher(
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
-    """Enumerate all accepted ciphers per TLS version and report their grades."""
-    version_map: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = {
-        "TLSv1.3": (ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
-        "TLSv1.2": (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
-    }
-    for attr, label in (("TLSv1_1", "TLSv1.1"), ("TLSv1", "TLSv1")):
-        if hasattr(ssl.TLSVersion, attr):
-            v = getattr(ssl.TLSVersion, attr)
-            version_map[label] = (v, v)
+    """Enumerate accepted ciphers per TLS version and emit a graded CheckResult each.
 
-    # Store per-version ordered cipher lists in TLSDetails for reuse by
-    # _check_cipher_order so we do not probe twice.
+    Per-version ordered lists are stored on *details.offered_ciphers_by_version*
+    (a dynamic attribute) so that _check_cipher_order can reuse them without
+    making a second round of network probes.
+    """
     details.offered_ciphers_by_version: dict[str, list[str]] = {}  # type: ignore[attr-defined]
 
-    worst_status = Status.GOOD
-    status_rank = {
-        Status.GOOD: 0,
-        Status.SUFFICIENT: 1,
-        Status.PHASE_OUT: 2,
-        Status.INSUFFICIENT: 3,
-        Status.INFO: -1,
-    }
-
-    for ver_label, (tls_min, tls_max) in version_map.items():
+    for ver_label, (tls_min, tls_max) in _VERSION_MAP.items():
         ciphers = _enumerate_ciphers_for_version(
             host, port, helo_domain, sni_hostname, tls_min, tls_max
         )
@@ -930,18 +963,13 @@ def _check_cipher(
 
         details.offered_ciphers_by_version[ver_label] = ciphers  # type: ignore[attr-defined]
 
-        detail_lines: list[str] = []
         ver_worst = Status.GOOD
+        detail_lines: list[str] = []
         for c in ciphers:
             st = _classify_cipher(c)
-            icon = {
-                "GOOD": "✔",
-                "SUFFICIENT": "~",
-                "PHASE_OUT": "↓",
-                "INSUFFICIENT": "✘",
-            }.get(st.value, "?")
+            icon = _CIPHER_ICON.get(st.value, "?")
             detail_lines.append(f"  {icon} [{st.value}] {c}")
-            if status_rank.get(st, 0) > status_rank.get(ver_worst, 0):
+            if _STATUS_RANK.get(st, 0) > _STATUS_RANK.get(ver_worst, 0):
                 ver_worst = st
 
         checks.append(
@@ -952,17 +980,21 @@ def _check_cipher(
                 details=detail_lines,
             )
         )
-        if status_rank.get(ver_worst, 0) > status_rank.get(worst_status, 0):
-            worst_status = ver_worst
 
-    # Populate details.offered_ciphers (flat list) and cipher_name/bits from
-    # the best negotiated connection for backward-compat with other checks.
-    all_flat: list[str] = []
+    # Flat deduped list for backward compatibility with other checks
+    seen: set[str] = set()
+    flat: list[str] = []
     for lst in details.offered_ciphers_by_version.values():  # type: ignore[attr-defined]
         for c in lst:
-            if c not in all_flat:
-                all_flat.append(c)
-    details.offered_ciphers = all_flat
+            if c not in seen:
+                seen.add(c)
+                flat.append(c)
+    details.offered_ciphers = flat
+
+
+# ---------------------------------------------------------------------------
+# Check: cipher order
+# ---------------------------------------------------------------------------
 
 
 def _check_cipher_order(
@@ -973,19 +1005,13 @@ def _check_cipher_order(
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
-    """Check server cipher preference enforcement and prescribed ordering,
-    per TLS version, using the ordered lists populated by _check_cipher."""
+    """Check server cipher-preference enforcement and prescribed ordering per version.
+
+    Must be called after _check_cipher so that offered_ciphers_by_version is populated.
+    """
     by_version: dict[str, list[str]] = getattr(
         details, "offered_ciphers_by_version", {}
     )
-    version_map: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = {
-        "TLSv1.3": (ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
-        "TLSv1.2": (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
-    }
-    for attr, label in (("TLSv1_1", "TLSv1.1"), ("TLSv1", "TLSv1")):
-        if hasattr(ssl.TLSVersion, attr):
-            v = getattr(ssl.TLSVersion, attr)
-            version_map[label] = (v, v)
 
     if not by_version:
         checks.append(
@@ -1005,14 +1031,11 @@ def _check_cipher_order(
     }
 
     for ver_label, ciphers in by_version.items():
-        if not ciphers:
-            continue
-
-        tls_min, tls_max = version_map.get(
+        tls_min, tls_max = _VERSION_MAP.get(
             ver_label, (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2)
         )
 
-        # I. Server-enforced preference
+        # --- Server-preference enforcement ---
         enforced = _detect_server_cipher_order(
             host, port, helo_domain, sni_hostname, ciphers, tls_min, tls_max
         )
@@ -1044,21 +1067,19 @@ def _check_cipher_order(
                 )
             )
 
-        # II. Prescribed ordering: Good → Sufficient → Phase-out
+        # --- Prescribed ordering: Good → Sufficient → Phase-out ---
         categories = [_classify_cipher(c) for c in ciphers]
         ranks = [order_rank.get(s, 3) for s in categories]
-        prescribed = ranks == sorted(ranks)
-        unique_cats = set(categories)
 
-        if unique_cats <= {Status.GOOD}:
+        if set(categories) <= {Status.GOOD}:
             checks.append(
                 CheckResult(
                     name=f"Cipher Order – Prescribed Ordering ({ver_label})",
                     status=Status.NA,
-                    value="N/A (Good ciphers only)",
+                    value="N/A (all ciphers are Good)",
                 )
             )
-        elif prescribed:
+        elif ranks == sorted(ranks):
             checks.append(
                 CheckResult(
                     name=f"Cipher Order – Prescribed Ordering ({ver_label})",
@@ -1067,7 +1088,6 @@ def _check_cipher_order(
                 )
             )
         else:
-            # Show what the correct order should look like
             correct = sorted(
                 ciphers, key=lambda c: order_rank.get(_classify_cipher(c), 3)
             )
@@ -1076,94 +1096,47 @@ def _check_cipher_order(
                     name=f"Cipher Order – Prescribed Ordering ({ver_label})",
                     status=Status.WARNING,
                     value="Incorrect",
-                    details=(
-                        [
-                            "Ciphers should be ordered Good → Sufficient → Phase-out.",
-                            "Actual order: " + ", ".join(ciphers),
-                            "Recommended: " + ", ".join(correct),
-                        ]
-                    ),
+                    details=[
+                        "Ciphers should be ordered: Good → Sufficient → Phase-out.",
+                        "Actual order:  " + ", ".join(ciphers),
+                        "Recommended:   " + ", ".join(correct),
+                    ],
                 )
             )
 
 
-# RFC 7919 ffdhe group fingerprints (SHA-256 of the DER-encoded group params)
-_FFDHE_GROUPS: dict[str, tuple[Status, str]] = {
-    # Sufficient
-    "64852d6890ff9e62eecd1ee89c72af9af244dfef5b853bcedea3dfd7aade22b3": (
-        Status.SUFFICIENT,
-        "ffdhe4096",
-    ),
-    "c410cc9c4fd85d2c109f7ebe5930ca5304a52927c0ebcb1a11c5cf6b2386bbab": (
-        Status.SUFFICIENT,
-        "ffdhe3072",
-    ),
-    # Phase-out
-    "9ba6429597aeed2d8617a7705b56e96d044f64b07971659382e426675105654b": (
-        Status.PHASE_OUT,
-        "ffdhe2048",
-    ),
-}
-
-# Good EC curves for ECDHE key exchange (NCSC-NL TLS v2.1 B5-1 / table 9)
-_GOOD_EC_CURVES: frozenset[str] = frozenset(
-    {
-        "secp256r1",
-        "prime256v1",  # same curve, two names
-        "secp384r1",
-        "x448",
-        "x25519",
-    }
-)
-_PHASE_OUT_EC_CURVES: frozenset[str] = frozenset({"secp224r1"})
-
-
-def _classify_ec_curve_kex(curve: str) -> Status:
-    c = curve.lower()
-    if c in _GOOD_EC_CURVES:
-        return Status.GOOD
-    if c in _PHASE_OUT_EC_CURVES:
-        return Status.PHASE_OUT
-    if c:
-        return Status.INSUFFICIENT
-    return Status.INFO  # unknown
-
-
-# Public alias kept for backward-compat (tests + external callers)
-_classify_ec_curve = _classify_ec_curve_kex
+# ---------------------------------------------------------------------------
+# Check: key exchange
+# ---------------------------------------------------------------------------
 
 
 def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
     """Assess the key exchange mechanism used in the negotiated TLS session.
 
-    TLS 1.3 always uses ephemeral ECDHE (mandated by RFC 8446).  Python's ssl
-    module does not expose the negotiated group name via a public API on most
-    builds, so for TLS 1.3 we report x25519 (the default and overwhelmingly
-    most common group) as GOOD with an informational note.
+    TLS 1.3: ephemeral ECDHE is mandatory (RFC 8446 §4.2.7).  Python ssl does
+    not expose the negotiated NamedGroup on most builds; we report GOOD and
+    note the limitation when the group name is unavailable.
 
-    For TLS 1.2 we derive the mechanism from the cipher name:
-      - ECDHE-* → EC key exchange; try to read the curve from _sslobj.group()
-      - DHE-*   → finite-field DH; assess by key bit-length
-      - other   → RSA key exchange (phase-out for key exchange purposes)
+    TLS ≤1.2: mechanism is inferred from the cipher name prefix:
+      ECDHE-*  → EC Diffie-Hellman; classify the named curve
+      DHE-*    → finite-field DH; assess by key size
+      other    → static RSA key exchange (no forward secrecy; phase-out)
     """
     tls_ver = details.tls_version
     cipher = details.cipher_name
 
-    # ── TLS 1.3 ──────────────────────────────────────────────────────────────
-    # RFC 8446 §4.2.7: ephemeral ECDHE is mandatory; x25519 is the default
-    # group in virtually all implementations.  Python ssl does not expose the
-    # negotiated NamedGroup, so we report what we know from the protocol spec.
-    if tls_ver == "TLSv1.3":
-        # Try to read the group via the internal _sslobj.group() if available
-        # (present on some CPython + OpenSSL builds).
+    # TLS 1.3 – always ephemeral ECDHE per RFC 8446
+    if tls_ver == "TLSv1.3" and cipher.startswith("TLS_"):
         group = details.dh_group or ""
         if group:
-            st = _classify_ec_curve_kex(group)
-            msg = []
-            if st == Status.PHASE_OUT:
-                msg = [f"Curve {group} is deprecated; prefer x25519 or secp256r1."]
-            elif st == Status.INSUFFICIENT:
-                msg = [f"Curve {group} is not recommended for key exchange."]
+            st = _classify_ec_curve(group)
+            msg = (
+                [f"Curve {group} is deprecated; prefer x25519 or secp256r1."]
+                if st == Status.PHASE_OUT
+                else [f"Curve {group} is not recommended for key exchange."]
+                if st == Status.INSUFFICIENT
+                else []
+            )
             checks.append(
                 CheckResult(
                     name="Key Exchange – EC Curve",
@@ -1173,37 +1146,34 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
                 )
             )
         else:
-            # group() not available; TLS 1.3 mandates ECDHE so this is Good.
             checks.append(
                 CheckResult(
                     name="Key Exchange – EC Curve",
                     status=Status.GOOD,
-                    value="ECDHE (TLS 1.3 – x25519 or negotiated curve)",
+                    value="ECDHE (TLS 1.3 – group not exposed by this Python/OpenSSL build)",
                     details=[
-                        "TLS 1.3 mandates ephemeral ECDHE (RFC 8446). "
-                        "Exact curve not exposed by Python ssl on this build."
+                        "TLS 1.3 mandates ephemeral ECDHE (RFC 8446 §4.2.7). "
+                        "Use testssl.sh to confirm the exact group."
                     ],
                 )
             )
         return
 
-    # ── TLS 1.2 / legacy: derive mechanism from cipher name ──────────────────
+    # TLS ≤1.2 – derive mechanism from cipher name
     if "ECDHE" in cipher:
-        group = details.dh_group or ""
-        # Fallback: the cert pubkey curve is NOT the kex curve, but it's the
-        # only hint we have when _sslobj.group() is absent.
-        curve = group  # do not fall back to cert curve — different thing
-        st = _classify_ec_curve_kex(curve)
-        msg: list[str] = []
-        if st == Status.PHASE_OUT:
-            msg = [f"Curve {curve} is deprecated; migrate to secp256r1 or secp384r1."]
-        elif st == Status.INSUFFICIENT:
-            msg = [f"Curve {curve} is not considered secure for key exchange."]
-        elif st == Status.INFO:
-            msg = [
-                "EC curve name not exposed by Python ssl on this build. "
-                "Use testssl.sh to verify the negotiated curve."
+        curve = details.dh_group or ""  # NOTE: cert pubkey curve ≠ kex curve
+        st = _classify_ec_curve(curve)
+        msg = (
+            [f"Curve {curve} is deprecated; migrate to secp256r1 or secp384r1."]
+            if st == Status.PHASE_OUT
+            else [f"Curve {curve} is not considered secure for key exchange."]
+            if st == Status.INSUFFICIENT
+            else [
+                "EC curve not exposed by this Python/OpenSSL build; verify with testssl.sh."
             ]
+            if st == Status.INFO
+            else []
+        )
         checks.append(
             CheckResult(
                 name="Key Exchange – EC Curve",
@@ -1215,60 +1185,57 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
 
     elif "DHE" in cipher:
         bits = details.dh_bits or 0
-        if bits >= 4096:
-            st2, note = Status.SUFFICIENT, "ffdhe4096 or larger – Good."
-        elif bits >= 3072:
-            st2, note = Status.SUFFICIENT, "ffdhe3072 – Good."
+        if bits >= 3072:
+            st2, note = Status.SUFFICIENT, ""
         elif bits >= 2048:
-            st2, note = Status.PHASE_OUT, "ffdhe2048 – phase out; upgrade to ≥3072 bit."
+            st2, note = (
+                Status.PHASE_OUT,
+                "ffdhe2048 – phase-out; upgrade to ≥3072-bit group.",
+            )
         elif bits > 0:
             st2, note = Status.INSUFFICIENT, f"{bits}-bit DH group is insecure."
         else:
             st2, note = (
                 Status.INFO,
-                "DH group size not exposed by Python ssl on this build.",
+                "DH group size not exposed by this Python/OpenSSL build.",
             )
         checks.append(
             CheckResult(
                 name="Key Exchange – DH Group",
                 status=st2,
                 value=f"{bits} bit" if bits else "unknown",
-                details=[note] if st2 != Status.SUFFICIENT else [],
+                details=[note] if note else [],
             )
         )
 
     else:
-        # RSA key exchange (no forward secrecy) – phase-out per NCSC-NL B5-1
+        # RSA key exchange: no forward secrecy
         checks.append(
             CheckResult(
                 name="Key Exchange",
                 status=Status.PHASE_OUT,
                 value=f"RSA ({cipher})",
                 details=[
-                    "RSA key exchange provides no forward secrecy. "
-                    "Migrate to ECDHE or DHE ciphers."
+                    "RSA key exchange provides no forward secrecy. Migrate to ECDHE or DHE ciphers."
                 ],
             )
         )
 
 
+# ---------------------------------------------------------------------------
+# Check: key-exchange hash function
+# ---------------------------------------------------------------------------
+
+_SHA_GOOD = {"sha256", "sha384", "sha512"}
+_SHA_PHASE_OUT = {"sha1", "sha", "md5"}
+
+
 def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None:
-    """Check the hash function used for the TLS key-exchange signature."""
-    cipher = details.cipher_name
-    # Extract hash suffix from cipher name (e.g. AES256-GCM-SHA384 → SHA384)
-    sha_good = {"sha256", "sha384", "sha512"}
-    sha_phase_out = {"sha1", "sha", "md5"}
+    """Report the hash algorithm used to sign the key-exchange parameters.
 
-    found: str | None = None
-    for part in cipher.lower().split("-"):
-        if part in sha_good:
-            found = part.upper()
-            break
-        if part in sha_phase_out:
-            found = part.upper()
-            break
-
-    # TLS 1.3 always uses HKDF with SHA-256/384 – mark as good
+    TLS 1.3 always uses HKDF with SHA-256 or SHA-384; no inspection is needed.
+    For TLS ≤1.2 the hash is the last token of the cipher name (e.g. -SHA256).
+    """
     if details.tls_version == "TLSv1.3":
         checks.append(
             CheckResult(
@@ -1279,10 +1246,18 @@ def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None
         )
         return
 
-    if found and found.lower() in sha_good | {"sha256", "sha384", "sha512"}:
+    found: str | None = None
+    for part in details.cipher_name.lower().split("-"):
+        if part in _SHA_GOOD or part in _SHA_PHASE_OUT:
+            found = part.upper()
+            break
+
+    if found and found.lower() in _SHA_GOOD:
         checks.append(
             CheckResult(
-                name="Hash Function (Key Exchange)", status=Status.GOOD, value=found
+                name="Hash Function (Key Exchange)",
+                status=Status.GOOD,
+                value=found,
             )
         )
     elif found:
@@ -1306,7 +1281,13 @@ def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None
         )
 
 
+# ---------------------------------------------------------------------------
+# Check: TLS compression (CRIME attack)
+# ---------------------------------------------------------------------------
+
+
 def _check_compression(details: TLSDetails, checks: list[CheckResult]) -> None:
+    """Flag TLS-layer compression, which enables the CRIME attack (CVE-2012-4929)."""
     comp = details.compression
     if not comp:
         checks.append(
@@ -1324,7 +1305,7 @@ def _check_compression(details: TLSDetails, checks: list[CheckResult]) -> None:
                 status=Status.INSUFFICIENT,
                 value=comp,
                 details=[
-                    "TLS compression is enabled. Disable immediately to prevent CRIME attacks."
+                    "TLS-layer compression is enabled. Disable immediately to prevent CRIME attacks."
                 ],
             )
         )
@@ -1334,12 +1315,32 @@ def _check_compression(details: TLSDetails, checks: list[CheckResult]) -> None:
                 name="TLS Compression",
                 status=Status.SUFFICIENT,
                 value=comp,
-                details=["Application-level compression detected."],
+                details=[
+                    "Application-level compression detected (not CRIME-vulnerable by itself)."
+                ],
             )
         )
 
 
+# ---------------------------------------------------------------------------
+# Check: renegotiation (RFC 5746)
+# ---------------------------------------------------------------------------
+
+
 def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None:
+    """Check for RFC 5746 secure renegotiation support.
+
+    TLS 1.3 eliminates renegotiation entirely (replaced by Key Update); both
+    sub-checks are reported as N/A.
+
+    For TLS ≤1.2, we infer secure-renegotiation support from the tls-unique
+    channel binding: if it is non-null, the Renegotiation Info extension (RI)
+    was negotiated, satisfying RFC 5746.
+
+    Client-initiated renegotiation cannot be actively probed in pure Python
+    (it would require sending a ClientHello mid-session); it is flagged for
+    manual verification instead.
+    """
     if details.tls_version == "TLSv1.3":
         checks.append(
             CheckResult(
@@ -1369,7 +1370,7 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
                 status=Status.INSUFFICIENT,
                 value="Not supported",
                 details=[
-                    "RFC 5746 secure renegotiation is absent; server is vulnerable to renegotiation attacks."
+                    "RFC 5746 Renegotiation Info extension absent; server may be vulnerable to renegotiation attacks."
                 ],
             )
         )
@@ -1382,8 +1383,6 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
             )
         )
 
-    # Client-initiated renegotiation cannot be probed reliably without
-    # actually initiating one; mark as informational.
     checks.append(
         CheckResult(
             name="Client-Initiated Renegotiation",
@@ -1395,9 +1394,15 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
     )
 
 
+# ---------------------------------------------------------------------------
+# Check: certificate
+# ---------------------------------------------------------------------------
+
+
 def _check_certificate(
     details: TLSDetails, checks: list[CheckResult], host: str
 ) -> None:
+    """Report trust chain, public key, signature algorithm, domain match, and expiry."""
     if not details.cert_subject:
         checks.append(
             CheckResult(
@@ -1420,7 +1425,7 @@ def _check_certificate(
         )
     )
 
-    # Public key
+    # Public key strength
     pk_type = details.cert_pubkey_type
     pk_bits = details.cert_pubkey_bits
     pk_curve = details.cert_pubkey_curve
@@ -1431,12 +1436,12 @@ def _check_certificate(
         elif pk_bits >= 2048:
             pk_status, pk_note = (
                 Status.SUFFICIENT,
-                "2048-bit RSA is acceptable but 3072+ is recommended.",
+                "2048-bit RSA is acceptable but ≥3072 bit is recommended.",
             )
         else:
             pk_status, pk_note = (
                 Status.INSUFFICIENT,
-                f"{pk_bits}-bit RSA key is too short.",
+                f"{pk_bits}-bit RSA key is too short; reissue with ≥2048 bit.",
             )
         checks.append(
             CheckResult(
@@ -1454,7 +1459,7 @@ def _check_certificate(
                 status=curve_status,
                 value=f"EC {pk_curve} ({pk_bits} bit)",
                 details=(
-                    [f"Curve {pk_curve} is deprecated."]
+                    [f"Curve {pk_curve} is deprecated; reissue with P-256 or P-384."]
                     if curve_status == Status.PHASE_OUT
                     else [f"Curve {pk_curve} is not recommended."]
                     if curve_status == Status.INSUFFICIENT
@@ -1471,21 +1476,9 @@ def _check_certificate(
 
     # Signature algorithm
     sig_alg = details.cert_sig_alg.lower()
-    good_sig = {
-        "sha256",
-        "sha384",
-        "sha512",
-        "sha256withrsaencryption",
-        "sha384withrsaencryption",
-        "sha512withrsaencryption",
-        "ecdsa-with-sha256",
-        "ecdsa-with-sha384",
-        "ecdsa-with-sha512",
-    }
-    bad_sig = {"sha1", "md5", "sha1withrsaencryption", "md5withrsaencryption"}
-    if any(g in sig_alg for g in {"sha256", "sha384", "sha512"}):
+    if any(h in sig_alg for h in ("sha256", "sha384", "sha512")):
         sig_status = Status.GOOD
-    elif any(b in sig_alg for b in {"sha1", "md5"}):
+    elif any(h in sig_alg for h in ("sha1", "md5")):
         sig_status = Status.INSUFFICIENT
     else:
         sig_status = Status.INFO
@@ -1496,7 +1489,7 @@ def _check_certificate(
             value=details.cert_sig_alg,
             details=(
                 [
-                    "SHA-1/MD5 signatures are insecure; certificate must be reissued with SHA-256+."
+                    "SHA-1/MD5 signatures are cryptographically broken; reissue the certificate with SHA-256+."
                 ]
                 if sig_status == Status.INSUFFICIENT
                 else []
@@ -1504,18 +1497,17 @@ def _check_certificate(
         )
     )
 
-    # Domain name match
-    san = details.cert_san
+    # Domain match: SAN takes precedence over CN (RFC 6125)
     hostname = host.lower()
-    matched = any(
-        hostname == n.lower()
-        or (n.startswith("*.") and hostname.endswith(n[1:].lower()))
-        for n in san
-    )
-    if not san:
-        # Fall back to subject CN check
-        cn_match = f"cn={hostname}" in details.cert_subject.lower()
-        matched = cn_match
+    san = details.cert_san
+    if san:
+        matched = any(
+            hostname == n.lower()
+            or (n.startswith("*.") and hostname.endswith(n[1:].lower()))
+            for n in san
+        )
+    else:
+        matched = f"cn={hostname}" in details.cert_subject.lower()
 
     checks.append(
         CheckResult(
@@ -1525,8 +1517,8 @@ def _check_certificate(
             details=[]
             if matched
             else [
-                f"Hostname '{host}' not found in SAN/CN. "
-                "Note: SMTP senders typically ignore domain match unless DANE-TA is used."
+                f"Hostname '{host}' not found in certificate SAN/CN. "
+                "Note: SMTP senders typically ignore name mismatch unless DANE-TA is used."
             ],
         )
     )
@@ -1537,17 +1529,19 @@ def _check_certificate(
             expiry = datetime.fromisoformat(details.cert_not_after)
             if expiry.tzinfo is None:
                 expiry = expiry.replace(tzinfo=timezone.utc)
-            now = datetime.now(tz=timezone.utc)
-            days_left = (expiry - now).days
+            days_left = (expiry - datetime.now(tz=timezone.utc)).days
             if days_left < 0:
-                exp_status = Status.ERROR
-                exp_detail = ["Certificate has expired!"]
+                exp_status, exp_detail = Status.ERROR, ["Certificate has EXPIRED."]
             elif days_left < 30:
-                exp_status = Status.WARNING
-                exp_detail = [f"Certificate expires in {days_left} day(s)."]
+                exp_status, exp_detail = (
+                    Status.WARNING,
+                    [f"Certificate expires in {days_left} day(s) – renew soon."],
+                )
             else:
-                exp_status = Status.OK
-                exp_detail = [f"Expires in {days_left} days ({expiry.date()})."]
+                exp_status, exp_detail = (
+                    Status.OK,
+                    [f"Valid for {days_left} more days (expires {expiry.date()})."],
+                )
             checks.append(
                 CheckResult(
                     name="Certificate Expiry",
@@ -1566,11 +1560,21 @@ def _check_certificate(
             )
 
 
-def _check_caa(host: str, checks: list[CheckResult]) -> list[str]:
-    """Look up CAA records for the MX hostname (walks up DNS hierarchy)."""
+# ---------------------------------------------------------------------------
+# Check: CAA records (RFC 8659)
+# ---------------------------------------------------------------------------
+
+
+def _check_caa(host: str, checks: list[CheckResult]) -> None:
+    """Look up CAA records, walking up the DNS hierarchy from the MX hostname.
+
+    RFC 8659 requires at least one 'issue' or 'issuewild' tag.  A plain-HTTP
+    iodef URL is flagged because incident reports sent over HTTP can be
+    intercepted or tampered with.
+    """
     labels = host.rstrip(".").split(".")
     caa_records: list[str] = []
-    found_at: str = ""
+    found_at = ""
 
     for i in range(len(labels)):
         candidate = ".".join(labels[i:])
@@ -1586,26 +1590,26 @@ def _check_caa(host: str, checks: list[CheckResult]) -> list[str]:
                 name="CAA Records",
                 status=Status.WARNING,
                 details=[
-                    f"No CAA records found for {host} or any parent domain. Any CA can issue certificates."
+                    f"No CAA records found for {host} or any parent domain. "
+                    "Any CA can currently issue certificates for this domain."
                 ],
             )
         )
-        return []
-
-    # Validate syntax and require at least one 'issue' tag
-    has_issue = any("issue " in r or r.strip().endswith("issue") for r in caa_records)
-    iodef_http = any(
-        "iodef" in r and "http://" in r and "https://" not in r for r in caa_records
-    )
-    syntax_ok = all(len(r.split()) >= 3 for r in caa_records)
+        return
 
     issues: list[str] = []
-    if not has_issue:
+    if not any("issue " in r or r.strip().endswith("issue") for r in caa_records):
         issues.append("No 'issue' tag found; add at least one CAA 'issue' record.")
-    if iodef_http:
-        issues.append("iodef URL uses HTTP; use HTTPS for secure incident reporting.")
-    if not syntax_ok:
-        issues.append("One or more CAA records may have invalid syntax.")
+    if any(
+        "iodef" in r and "http://" in r and "https://" not in r for r in caa_records
+    ):
+        issues.append(
+            "iodef URL uses plain HTTP; switch to HTTPS to protect incident reports."
+        )
+    if not all(len(r.split()) >= 3 for r in caa_records):
+        issues.append(
+            "One or more CAA records appear malformed (expected: flags tag value)."
+        )
 
     checks.append(
         CheckResult(
@@ -1615,30 +1619,27 @@ def _check_caa(host: str, checks: list[CheckResult]) -> list[str]:
             details=caa_records + issues,
         )
     )
-    return caa_records
 
 
 # ---------------------------------------------------------------------------
-# DANE / TLSA helpers
+# DANE / TLSA verification (RFC 6698, RFC 7671)
 # ---------------------------------------------------------------------------
 
 
 def _tlsa_fingerprint(der: bytes, selector: int, matching: int) -> str | None:
-    """Compute the TLSA fingerprint for a given selector and matching type.
+    """Compute a TLSA record fingerprint from a DER-encoded certificate.
 
-    Selector:
-      0 = Full certificate DER
-      1 = SubjectPublicKeyInfo DER (spki)
-    Matching type:
-      0 = Exact (raw bytes as hex)
-      1 = SHA-256
-      2 = SHA-512
+    Selector  0 = full certificate DER
+              1 = SubjectPublicKeyInfo DER (SPKI)
+    Matching  0 = exact match (raw hex)
+              1 = SHA-256
+              2 = SHA-512
+    Returns None for unsupported selector/matching combinations or parse errors.
     """
     try:
         if selector == 0:
             data = der
         elif selector == 1:
-            # Extract the SubjectPublicKeyInfo from the cert via cryptography
             from cryptography import x509 as _x509
             from cryptography.hazmat.primitives.serialization import (
                 Encoding,
@@ -1658,44 +1659,16 @@ def _tlsa_fingerprint(der: bytes, selector: int, matching: int) -> str | None:
             return hashlib.sha256(data).hexdigest()
         elif matching == 2:
             return hashlib.sha512(data).hexdigest()
-        else:
-            return None
-    except Exception:
         return None
-
-
-def _fetch_cert_der(
-    host: str, port: int, helo_domain: str, sni_hostname: str | None
-) -> bytes | None:
-    """Open a fresh STARTTLS connection and return the raw DER certificate."""
-    try:
-        smtp = smtplib.SMTP(timeout=_TIMEOUT)
-        smtp.connect(host, port)
-        smtp.ehlo(helo_domain)
-        if not smtp.has_extn("STARTTLS"):
-            smtp.quit()
-            return None
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        smtp._host = sni_hostname if sni_hostname else host  # type: ignore[attr-defined]
-        if not sni_hostname:
-            ctx.check_hostname = False
-        smtp.starttls(context=ctx)
-        der = smtp.sock.getpeercert(binary_form=True)  # type: ignore[union-attr]
-        try:
-            smtp.quit()
-        except Exception:
-            pass
-        return der
     except Exception:
         return None
 
 
 def _verify_tlsa_record(record_str: str, cert_der: bytes) -> tuple[bool, str]:
-    """Return (matches, description) for one TLSA record vs the server cert.
+    """Compare one TLSA record against the server certificate.
 
-    record_str is the raw string from DNS, e.g. "3 1 1 abcdef..."
+    record_str is the raw DNS value, e.g. "3 1 1 abcdef...".
+    Returns (matches, human-readable description).
     """
     parts = record_str.split()
     if len(parts) < 4:
@@ -1704,7 +1677,7 @@ def _verify_tlsa_record(record_str: str, cert_der: bytes) -> tuple[bool, str]:
         usage, selector, matching = int(parts[0]), int(parts[1]), int(parts[2])
         dns_hex = "".join(parts[3:]).lower()
     except ValueError:
-        return False, f"Could not parse TLSA record fields: {record_str!r}"
+        return False, f"Could not parse TLSA fields: {record_str!r}"
 
     usage_name = {0: "PKIX-TA", 1: "PKIX-EE", 2: "DANE-TA", 3: "DANE-EE"}.get(
         usage, str(usage)
@@ -1717,18 +1690,42 @@ def _verify_tlsa_record(record_str: str, cert_der: bytes) -> tuple[bool, str]:
 
     computed = _tlsa_fingerprint(cert_der, selector, matching)
     if computed is None:
-        return (
-            False,
-            f"{label}: could not compute fingerprint (selector/matching not supported)",
-        )
-
+        return False, f"{label}: fingerprint type not supported"
     if computed == dns_hex:
-        return True, f"{label}: fingerprint matches"
-    else:
-        return False, (
-            f"{label}: fingerprint MISMATCH – "
-            f"DNS: {dns_hex[:32]}… / Cert: {computed[:32]}…"
-        )
+        return True, f"{label}: fingerprint matches ✔"
+    return False, (
+        f"{label}: fingerprint MISMATCH – DNS: {dns_hex[:32]}… / cert: {computed[:32]}…"
+    )
+
+
+def _fetch_cert_der(
+    host: str,
+    port: int,
+    helo_domain: str,
+    sni_hostname: str | None,
+) -> bytes | None:
+    """Open a fresh STARTTLS connection and return the raw DER certificate.
+
+    Used as a fallback when _probe_tls did not store the DER (e.g. STARTTLS
+    was not advertised during the main probe but became available later).
+    """
+    try:
+        smtp, _, _ = _connect_plain(host, port)
+        smtp.ehlo(helo_domain)
+        if not smtp.has_extn("STARTTLS"):
+            smtp.quit()
+            return None
+        ctx = _no_verify_ctx()
+        _set_sni(smtp, sni_hostname, host)
+        smtp.starttls(context=ctx)
+        der = smtp.sock.getpeercert(binary_form=True)  # type: ignore[union-attr]
+        try:
+            smtp.quit()
+        except Exception:
+            pass
+        return der
+    except Exception:
+        return None
 
 
 def _check_dane(
@@ -1739,7 +1736,19 @@ def _check_dane(
     cert_der: bytes | None,
     checks: list[CheckResult],
 ) -> None:
-    """Look up TLSA records and verify they match the server certificate."""
+    """Look up TLSA records and verify them against the live server certificate.
+
+    DANE usages for MX servers (RFC 7672):
+      2 = DANE-TA  – trust anchor; certificate must chain to this record
+      3 = DANE-EE  – end entity; certificate must match this record exactly
+
+    Usages 0 (PKIX-TA) and 1 (PKIX-EE) are PKIX-constrained and rarely used
+    for MX; we flag them as warnings rather than errors.
+
+    Rollover: DANE allows multiple TLSA records so that the next certificate
+    can be pre-published before the current one expires.  Non-matching records
+    during a valid rollover are expected and correct.
+    """
     tlsa_name = f"_{port}._tcp.{host}"
     records = resolve(tlsa_name, "TLSA")
 
@@ -1748,14 +1757,11 @@ def _check_dane(
             CheckResult(
                 name="DANE – TLSA Existence",
                 status=Status.INFO,
-                details=[
-                    f"No TLSA record found at {tlsa_name}. DANE is not configured."
-                ],
+                details=[f"No TLSA record at {tlsa_name}. DANE is not configured."],
             )
         )
         return
 
-    # Separate recommended (DANE-TA=2, DANE-EE=3) from PKIX-only (0,1)
     recommended = [r for r in records if r.startswith("2 ") or r.startswith("3 ")]
     pkix_only = [r for r in records if r.startswith("0 ") or r.startswith("1 ")]
 
@@ -1763,12 +1769,13 @@ def _check_dane(
         CheckResult(
             name="DANE – TLSA Existence",
             status=Status.OK if recommended else Status.WARNING,
-            value=f"{len(records)} TLSA record(s) ({len(recommended)} recommended usage)",
+            value=f"{len(records)} TLSA record(s), {len(recommended)} with recommended usage",
             details=(
                 recommended + pkix_only
                 if recommended
                 else [
-                    "Only PKIX-TA(0)/PKIX-EE(1) records found; DANE-TA(2) or DANE-EE(3) are required for MX."
+                    "Only PKIX-TA(0)/PKIX-EE(1) usages found; "
+                    "DANE-TA(2) or DANE-EE(3) are required for MX servers (RFC 7672)."
                 ]
             ),
         )
@@ -1777,12 +1784,8 @@ def _check_dane(
     if not recommended:
         return
 
-    # ── Certificate fingerprint verification ─────────────────────────────────
-    # Use the DER from the already-open TLS session if available; otherwise
-    # open a fresh connection just for this check.
-    der = cert_der
-    if der is None:
-        der = _fetch_cert_der(host, port, helo_domain, sni_hostname)
+    # Certificate fingerprint verification
+    der = cert_der or _fetch_cert_der(host, port, helo_domain, sni_hostname)
 
     if der is None:
         checks.append(
@@ -1790,76 +1793,102 @@ def _check_dane(
                 name="DANE – Certificate Match",
                 status=Status.WARNING,
                 details=[
-                    "Could not retrieve server certificate to verify TLSA fingerprints."
+                    "Could not retrieve the server certificate; TLSA fingerprints unverified."
                 ],
             )
         )
     else:
-        match_results: list[tuple[bool, str]] = [
-            _verify_tlsa_record(r, der) for r in recommended
-        ]
-        any_match = any(ok for ok, _ in match_results)
-        n_match = sum(ok for ok, _ in match_results)
-        detail_lines = [desc for _, desc in match_results]
+        results = [_verify_tlsa_record(r, der) for r in recommended]
+        n_match = sum(ok for ok, _ in results)
+        detail_lines = [desc for _, desc in results]
 
-        # DANE requires at least one TLSA record to match the current certificate.
-        # Non-matching records are expected and valid — they are pre-published
-        # records for the *next* certificate in a rollover scheme.
-        if any_match:
-            status = Status.OK
-            if n_match < len(match_results):
+        if n_match > 0:
+            if n_match < len(results):
                 detail_lines.append(
-                    f"{len(match_results) - n_match} non-matching record(s) are pre-published "
+                    f"{len(results) - n_match} non-matching record(s) appear to be pre-published "
                     "for the next certificate (rollover) — this is expected and correct."
                 )
+            checks.append(
+                CheckResult(
+                    name="DANE – Certificate Match",
+                    status=Status.OK,
+                    value=f"{n_match}/{len(results)} record(s) match",
+                    details=detail_lines,
+                )
+            )
         else:
-            status = Status.ERROR
             detail_lines.append(
                 "No TLSA record matches the server certificate. "
-                "Mail delivery via DANE will fail for strict senders."
+                "DANE-aware senders will reject mail from this server."
+            )
+            checks.append(
+                CheckResult(
+                    name="DANE – Certificate Match",
+                    status=Status.ERROR,
+                    value=f"0/{len(results)} records match",
+                    details=detail_lines,
+                )
             )
 
-        checks.append(
-            CheckResult(
-                name="DANE – Certificate Match",
-                status=status,
-                value=f"{n_match}/{len(match_results)} record(s) match current certificate",
-                details=detail_lines,
-            )
-        )
+    # Rollover scheme assessment
+    n_ee = sum(1 for r in recommended if r.startswith("3 "))
+    n_ta = sum(1 for r in recommended if r.startswith("2 "))
 
-    # ── Rollover scheme ───────────────────────────────────────────────────────
     if len(recommended) >= 2:
-        has_ee = any(r.startswith("3 ") for r in recommended)
-        has_ta = any(r.startswith("2 ") for r in recommended)
-        if has_ee and has_ta:
-            rollover_note = (
-                "Current + Issuer CA scheme (DANE-EE + DANE-TA) – recommended."
+        if n_ee >= 1 and n_ta >= 1:
+            note, status = (
+                "DANE-EE + DANE-TA (current cert + issuer CA) – recommended rollover scheme.",
+                Status.OK,
             )
-            rollover_status = Status.OK
-        elif sum(1 for r in recommended if r.startswith("3 ")) >= 2:
-            rollover_note = "Current + Next scheme (DANE-EE + DANE-EE) – recommended."
-            rollover_status = Status.OK
+        elif n_ee >= 2:
+            note, status = (
+                "DANE-EE + DANE-EE (current + next cert) – recommended rollover scheme.",
+                Status.OK,
+            )
         else:
-            rollover_note = "Rollover scheme uses non-standard type combination."
-            rollover_status = Status.WARNING
-        checks.append(
-            CheckResult(
-                name="DANE – Rollover Scheme",
-                status=rollover_status,
-                details=[rollover_note],
+            note, status = (
+                "Non-standard type combination; verify your rollover plan.",
+                Status.WARNING,
             )
-        )
     else:
-        checks.append(
-            CheckResult(
-                name="DANE – Rollover Scheme",
-                status=Status.WARNING,
-                details=[
-                    "Only one TLSA record found. Add a second record for a safe rollover scheme."
-                ],
-            )
+        note, status = (
+            (
+                "Only one TLSA record present. "
+                "Add a second record (next cert or issuer CA) for a safe rollover."
+            ),
+            Status.WARNING,
         )
+
+    checks.append(
+        CheckResult(name="DANE – Rollover Scheme", status=status, details=[note])
+    )
+
+
+# ---------------------------------------------------------------------------
+# Open relay test
+# ---------------------------------------------------------------------------
+
+
+def _test_open_relay(smtp: smtplib.SMTP, helo_domain: str) -> bool:
+    """Return True if the server relays mail for two unrelated external addresses.
+
+    We issue MAIL FROM and RCPT TO for addresses at distinct example domains.
+    If both are accepted (SMTP 250), the server is an open relay.  We always
+    send RSET to avoid leaving a partial transaction queued on the server.
+    """
+    try:
+        smtp.ehlo(helo_domain)
+        code, _ = smtp.mail("relay-test@external-domain-test.example")
+        if code != 250:
+            return False
+        code, _ = smtp.rcpt("relay-test@another-external-domain.example")
+        try:
+            smtp.rset()
+        except smtplib.SMTPException:
+            pass
+        return code == 250
+    except smtplib.SMTPException:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1868,17 +1897,20 @@ def _check_dane(
 
 
 def check_smtp(
-    host: str, port: int = 25, helo_domain: str = "mailcheck.local"
+    host: str,
+    port: int = 25,
+    helo_domain: str = "mailcheck.local",
 ) -> SMTPDiagResult:
+    """Run all SMTP diagnostics for *host*:*port* and return a populated result."""
     result = SMTPDiagResult(host=host, port=port)
 
-    # --- resolve host to IP for PTR lookup ---
+    # Resolve to IP for PTR lookup (failure is non-fatal; we use the host string as fallback)
     try:
         ip = socket.gethostbyname(host)
     except socket.gaierror:
         ip = host
 
-    # --- plain connect + banner ---
+    # --- Connect ---
     try:
         smtp, connect_ms, banner = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException) as exc:
@@ -1898,11 +1930,11 @@ def check_smtp(
             name="SMTP Connect",
             status=Status.OK,
             value=f"{connect_ms:.1f} ms",
-            details=[f"Banner: {result.banner}"],
+            details=[f"Banner: {banner}"],
         )
     )
 
-    # --- reverse DNS (PTR) ---
+    # --- Reverse DNS (PTR) ---
     ptr = reverse_lookup(ip)
     result.reverse_dns = ptr
     result.checks.append(
@@ -1920,7 +1952,7 @@ def check_smtp(
         )
     )
 
-    # --- EHLO / STARTTLS advertised? ---
+    # --- EHLO + STARTTLS advertisement ---
     try:
         smtp.ehlo(helo_domain)
         has_starttls = smtp.has_extn("STARTTLS")
@@ -1933,14 +1965,16 @@ def check_smtp(
             name="STARTTLS",
             status=Status.OK if has_starttls else Status.WARNING,
             details=(
-                ["STARTTLS is advertised."]
+                ["STARTTLS advertised."]
                 if has_starttls
-                else ["STARTTLS is NOT advertised. Connections may be unencrypted."]
+                else [
+                    "STARTTLS is NOT advertised. Mail may be transmitted in plaintext."
+                ]
             ),
         )
     )
 
-    # --- open relay test ---
+    # --- Open relay ---
     open_relay = _test_open_relay(smtp, helo_domain)
     result.open_relay = open_relay
     result.checks.append(
@@ -1949,7 +1983,7 @@ def check_smtp(
             status=Status.ERROR if open_relay else Status.OK,
             details=(
                 [
-                    "Server accepts relaying for external addresses. Critical misconfiguration."
+                    "Server accepts relaying for external addresses — critical misconfiguration."
                 ]
                 if open_relay
                 else ["Server correctly rejects open relay attempts."]
@@ -1962,7 +1996,8 @@ def check_smtp(
     except smtplib.SMTPException:
         pass
 
-    # --- deep TLS inspection (separate connection) ---
+    # --- Deep TLS inspection (separate connection) ---
+    sni_hostname: str | None = None
     if has_starttls:
         tls_details, tls_err, sni_hostname = _probe_tls(host, port, helo_domain)
         if tls_err:
@@ -1975,8 +2010,7 @@ def check_smtp(
             )
         else:
             result.tls = tls_details
-            assert tls_details is not None  # narrowing for type checker
-
+            assert tls_details is not None  # narrow type for checker
             _check_tls_version(
                 host, port, helo_domain, sni_hostname, tls_details, result.checks
             )
@@ -1992,42 +2026,16 @@ def check_smtp(
             _check_renegotiation(tls_details, result.checks)
             _check_certificate(tls_details, result.checks, host)
 
-    # --- CAA records ---
+    # --- CAA ---
     _check_caa(host, result.checks)
 
     # --- DANE ---
-    # Pass the raw cert DER from the TLS probe so DANE can verify fingerprints
-    # without opening yet another connection.
-    _cert_der_for_dane = (
+    # Reuse the DER stashed by _probe_tls to avoid an extra connection.
+    cert_der = (
         result.tls._cert_der  # type: ignore[attr-defined]
         if result.tls and hasattr(result.tls, "_cert_der")
         else None
     )
-    _sni_for_dane: str | None = None
-    if has_starttls:
-        try:
-            _sni_for_dane = sni_hostname  # set inside the has_starttls block above
-        except NameError:
-            pass
-    _check_dane(
-        host, port, helo_domain, _sni_for_dane, _cert_der_for_dane, result.checks
-    )
+    _check_dane(host, port, helo_domain, sni_hostname, cert_der, result.checks)
 
     return result
-
-
-def _test_open_relay(smtp: smtplib.SMTP, helo_domain: str) -> bool:
-    """Return True if the server accepts relaying for external addresses."""
-    try:
-        smtp.ehlo(helo_domain)
-        code, _ = smtp.mail("relay-test@external-domain-test.example")
-        if code != 250:
-            return False
-        code, _ = smtp.rcpt("relay-test@another-external-domain.example")
-        try:
-            smtp.rset()
-        except smtplib.SMTPException:
-            pass
-        return code == 250
-    except smtplib.SMTPException:
-        return False
