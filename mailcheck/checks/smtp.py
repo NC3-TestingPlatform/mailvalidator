@@ -425,25 +425,35 @@ def _probe_tls(
         details.cert_pubkey_bits = info.get("pubkey_bits", 0)
         details.cert_pubkey_curve = info.get("pubkey_curve", "")
 
-        # Trust: attempt a second STARTTLS with full certificate verification.
-        # SNI hostname checking is only meaningful for DNS names.
+        # Chain-of-trust verification: repeat STARTTLS with CERT_REQUIRED but
+        # check_hostname=False so that a name mismatch does not mask a genuine
+        # chain failure.  Hostname correctness is a separate concern handled by
+        # _check_certificate → "Certificate Domain Match".
+        #
+        # We need SNI for the server to present the right certificate, so this
+        # check is skipped for bare IP addresses (no meaningful hostname to send).
         if sni_hostname:
             try:
-                verify_ctx = ssl.create_default_context()
-                verify_smtp = smtplib.SMTP(timeout=_TIMEOUT)
-                verify_smtp.connect(host, port)
-                verify_smtp.ehlo(helo_domain)
-                verify_smtp._host = sni_hostname  # type: ignore[attr-defined]
-                verify_smtp.starttls(context=verify_ctx)
+                chain_ctx = ssl.create_default_context()
+                chain_ctx.check_hostname = (
+                    False  # isolate chain validity from name matching
+                )
+                chain_smtp = smtplib.SMTP(timeout=_TIMEOUT)
+                chain_smtp.connect(host, port)
+                chain_smtp.ehlo(helo_domain)
+                chain_smtp._host = sni_hostname  # type: ignore[attr-defined]  # SNI only
+                chain_smtp.starttls(context=chain_ctx)
                 try:
-                    verify_smtp.quit()
+                    chain_smtp.quit()
                 except Exception:
                     pass
                 details.cert_trusted = True
-            except (ssl.SSLCertVerificationError, OSError, smtplib.SMTPException):
-                details.cert_trusted = False
+            except ssl.SSLCertVerificationError:
+                details.cert_trusted = False  # chain broken or untrusted root
+            except (OSError, smtplib.SMTPException):
+                details.cert_trusted = None  # could not connect; result unknown
         else:
-            details.cert_trusted = False  # cannot verify trust for bare IP addresses
+            details.cert_trusted = None  # SNI unavailable; chain cannot be verified
 
     # Secure renegotiation: presence of the tls-unique channel binding implies
     # the RFC 5746 Renegotiation Info extension was exchanged.
@@ -1414,14 +1424,31 @@ def _check_certificate(
         return
 
     # Trust chain
+    # cert_trusted=True   → chain verified against system trust store
+    # cert_trusted=False  → chain broken or self-signed (SSLCertVerificationError)
+    # cert_trusted=None   → could not verify (bare IP, or connection failed)
+    if details.cert_trusted is True:
+        trust_status, trust_value, trust_detail = (Status.GOOD, "Trusted", [])
+    elif details.cert_trusted is False:
+        trust_status = Status.WARNING
+        trust_value = "Untrusted / self-signed"
+        trust_detail = [
+            "Certificate chain could not be verified against the system trust store. "
+            "The certificate may be self-signed or issued by an unknown CA."
+        ]
+    else:
+        trust_status = Status.INFO
+        trust_value = "Unknown"
+        trust_detail = [
+            "Chain-of-trust could not be checked "
+            "(bare IP address or connection failure during verification)."
+        ]
     checks.append(
         CheckResult(
             name="Certificate Trust Chain",
-            status=Status.GOOD if details.cert_trusted else Status.WARNING,
-            value="Trusted" if details.cert_trusted else "Untrusted / self-signed",
-            details=[]
-            if details.cert_trusted
-            else ["Certificate cannot be verified against the system trust store."],
+            status=trust_status,
+            value=trust_value,
+            details=trust_detail,
         )
     )
 

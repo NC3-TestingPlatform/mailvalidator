@@ -60,7 +60,7 @@ class TLSDetails:
     cert_pubkey_type: str = ""  # "RSA" | "EC"
     cert_pubkey_bits: int = 0  # RSA key length
     cert_pubkey_curve: str = ""  # EC curve name
-    cert_trusted: bool = False
+    cert_trusted: bool | None = None  # None = could not verify
     dane_tlsa_records: list[str] = field(default_factory=list)
     caa_records: list[str] = field(default_factory=list)
     compression: str = ""  # "" = none, "zlib", etc.
