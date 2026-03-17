@@ -1,4 +1,16 @@
-"""DMARC record lookup and validation."""
+"""DMARC record lookup and validation (RFC 7489).
+
+The DMARC policy record is published at ``_dmarc.<domain>`` and tells
+receivers how to handle messages that fail SPF and DKIM alignment:
+
+* ``p=none``       – take no action (monitoring only)
+* ``p=quarantine`` – deliver to spam/junk folder
+* ``p=reject``     – reject the message outright
+
+This check also validates the aggregate reporting URI (``rua=``), the
+forensic reporting URI (``ruf=``), alignment modes, and the percentage
+tag (``pct=``).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +21,15 @@ from mailcheck.models import CheckResult, DMARCResult, Status
 
 
 def check_dmarc(domain: str) -> DMARCResult:
+    """Look up and validate the DMARC record at ``_dmarc.<domain>``.
+
+    :param domain: The domain whose DMARC record should be validated.
+    :type domain: str
+    :returns: Result containing the raw record and
+        :class:`~mailcheck.models.CheckResult` items for policy,
+        subdomain policy, reporting URIs, alignment, and percentage.
+    :rtype: DMARCResult
+    """
     result = DMARCResult(domain=domain)
     dmarc_name = f"_dmarc.{domain}"
 
@@ -46,6 +67,13 @@ def check_dmarc(domain: str) -> DMARCResult:
 
 
 def _parse_tags(record: str) -> dict[str, str]:
+    """Parse semicolon-delimited ``tag=value`` pairs from a DMARC record string.
+
+    :param record: Raw DMARC TXT record value.
+    :type record: str
+    :returns: Mapping of tag names to their string values.
+    :rtype: dict[str, str]
+    """
     tags: dict[str, str] = {}
     for part in re.split(r"\s*;\s*", record):
         if "=" in part:
@@ -55,6 +83,13 @@ def _parse_tags(record: str) -> dict[str, str]:
 
 
 def _validate(tags: dict[str, str], result: DMARCResult) -> None:
+    """Validate DMARC tag values and append :class:`~mailcheck.models.CheckResult` items to *result*.
+
+    :param tags: Parsed DMARC tag dictionary from :func:`_parse_tags`.
+    :type tags: dict[str, str]
+    :param result: Result object to which check items are appended.
+    :type result: DMARCResult
+    """
     # policy (p=)
     policy = tags.get("p", "")
     policy_status = {

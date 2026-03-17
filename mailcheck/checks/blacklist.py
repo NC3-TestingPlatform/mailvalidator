@@ -1,4 +1,17 @@
-"""DNS Blacklist / Blocklist (DNSBL / RBL) check."""
+"""DNS Blacklist / Blocklist (DNSBL / RBL) check.
+
+Checks a single IP address against 100+ widely-used DNSBL zones in
+parallel using a :class:`~concurrent.futures.ThreadPoolExecutor`.
+
+Each zone is queried by reversing the IP octets and appending the zone
+name (standard DNSBL protocol, RFC 5782).  A positive listing is
+confirmed only when the query resolves to ``127.0.0.2``, which is the
+RFC 5782 §2.1 standard "listed" response for IPv4 DNSBLs.  Other values
+in the ``127.0.0.0/8`` range are intentionally ignored: some zones
+(e.g. ``query.bondedsender.org``) resolve every query and return codes
+such as ``127.255.255.255`` to convey metadata, not a blacklist verdict.
+Accepting any resolution would produce false positives for those zones.
+"""
 
 from __future__ import annotations
 
@@ -124,7 +137,15 @@ DNSBL_ZONES: list[str] = [
 
 
 def _reverse_ip(ip: str) -> str:
-    """Return dotted-decimal reversed IP for DNSBL query."""
+    """Reverse an IP address for use as a DNSBL query prefix.
+
+    - IPv4: ``"1.2.3.4"`` → ``"4.3.2.1"``
+    - IPv6: expanded nibble-reversed form per RFC 5782.
+
+    :param ip: IPv4 or IPv6 address string.
+    :returns: Reversed address string, or ``""`` if *ip* is not valid.
+    :rtype: str
+    """
     try:
         addr = ipaddress.ip_address(ip)
         if addr.version == 4:
@@ -137,6 +158,34 @@ def _reverse_ip(ip: str) -> str:
 
 
 def _check_single(ip: str, zone: str) -> tuple[str, bool]:
+    """Query one DNSBL *zone* for *ip* and return ``(zone, listed)``.
+
+    The DNSBL protocol works by looking up ``<reversed-ip>.<zone>`` as an A
+    record.  A successful resolution means the IP is listed; NXDOMAIN means
+    it is not.
+
+    **Why ``127.0.0.2`` specifically**: RFC 5782 §2.1 defines ``127.0.0.2``
+    as the standard "listed" response for IPv4 DNSBLs.  Some zones extend
+    this with other values in the ``127.0.0.0/8`` range to encode listing
+    reasons (e.g. ``127.0.0.3`` for spam source, ``127.0.0.4`` for open
+    relay).  However, certain *allowlist* or *reputation* zones (such as
+    ``query.bondedsender.org``) resolve queries for *any* submitted IP and
+    return codes like ``127.255.255.255`` to convey metadata rather than a
+    blacklisting verdict.  Accepting any resolution as a positive listing
+    would therefore produce false positives for IPs that are not actually
+    blacklisted.
+
+    Restricting to ``127.0.0.2`` targets only the standard "listed" response
+    and avoids misinterpreting informational or allowlist return codes.
+
+    :param ip: IPv4 or IPv6 address to check.
+    :type ip: str
+    :param zone: DNSBL zone hostname (e.g. ``"zen.spamhaus.org"``).
+    :type zone: str
+    :returns: Tuple of ``(zone, is_listed)`` where *is_listed* is ``True``
+        only when the query resolves to ``127.0.0.2``.
+    :rtype: tuple[str, bool]
+    """
     reversed_ip = _reverse_ip(ip)
     if not reversed_ip:
         return zone, False
@@ -149,9 +198,25 @@ def _check_single(ip: str, zone: str) -> tuple[str, bool]:
 
 
 def check_blacklist(
-    ip: str, zones: list[str] | None = None, max_workers: int = 50
+    ip: str,
+    zones: list[str] | None = None,
+    max_workers: int = 50,
 ) -> BlacklistResult:
-    """Check *ip* against DNSBL zones (parallelised)."""
+    """Check *ip* against DNS blacklist zones using parallel DNS queries.
+
+    :param ip: IPv4 or IPv6 address to look up.
+    :type ip: str
+    :param zones: DNSBL zone list to query.  Defaults to the built-in
+        :data:`DNSBL_ZONES` list (100+ zones).  Duplicates are removed
+        automatically.
+    :type zones: list[str] or None
+    :param max_workers: Maximum number of concurrent DNS threads.
+        Defaults to ``50``.
+    :type max_workers: int
+    :returns: Result containing the list of zones where *ip* was found
+        listed and a single summary :class:`~mailcheck.models.CheckResult`.
+    :rtype: BlacklistResult
+    """
     all_zones = zones or DNSBL_ZONES
     # deduplicate
     all_zones = list(dict.fromkeys(all_zones))

@@ -1,4 +1,26 @@
-"""DKIM record lookup and validation."""
+"""DKIM base-node DNS conformance check.
+
+What this checks
+----------------
+RFC 6376 requires that ``<selector>._domainkey.<domain>`` resolves to a valid
+DKIM TXT record.  Selectors are chosen by the sending service and are not
+discoverable from DNS alone, so mailcheck cannot enumerate them.
+
+Instead, this check validates the *base node* ``_domainkey.<domain>``:
+
+- An RFC 2308-conformant name server **must** answer ``NOERROR`` (with an
+  empty answer section) for an empty non-terminal node, because child labels
+  (the selector records) are present beneath it.
+- A non-conformant name server answers ``NXDOMAIN``, which causes some
+  receivers to abort DKIM verification before even trying the selector lookup.
+
+:func:`~mailcheck.dns_utils.resolve` is called with ``raise_nxdomain=True``
+so ``None`` reliably signals NXDOMAIN, while ``[]`` signals NOERROR/empty
+(the correct response for an empty non-terminal).
+
+This is a necessary-but-not-sufficient conformance check.  To verify a
+specific selector's record use ``dig <selector>._domainkey.<domain> TXT``.
+"""
 
 from __future__ import annotations
 
@@ -7,25 +29,30 @@ from mailcheck.models import CheckResult, DKIMResult, Status
 
 
 def check_dkim(domain: str) -> DKIMResult:
-    """Validate DKIM support by checking the _domainkey.<domain> base node."""
-    result = DKIMResult(domain=domain)
+    """Check that ``_domainkey.<domain>`` responds correctly per RFC 2308.
 
-    # Check that _domainkey.<domain> exists as an empty non-terminal (RFC 2308).
-    # A conformant name server must answer NOERROR even when no records exist at
-    # that exact node, because child records (selectors) are present beneath it.
-    # Non-conformant servers answer NXDOMAIN, which prevents DKIM discovery.
-    base_domainkey = f"_domainkey.{domain}"
-    base_status = resolve(base_domainkey, "TXT")  # None signals NXDOMAIN
-    if base_status is None:
+    :param domain: The domain whose DKIM base node should be validated.
+    :returns: A :class:`~mailcheck.models.DKIMResult` containing one
+        :class:`~mailcheck.models.CheckResult` for the base-node conformance
+        check.
+    :rtype: ~mailcheck.models.DKIMResult
+    """
+    result = DKIMResult(domain=domain)
+    base_node = f"_domainkey.{domain}"
+
+    # raise_nxdomain=True: returns None on NXDOMAIN, [] on NOERROR/empty.
+    records = resolve(base_node, "TXT", raise_nxdomain=True)
+
+    if records is None:
         result.checks.append(
             CheckResult(
                 name="DKIM Base Node",
                 status=Status.ERROR,
                 details=[
-                    f"{base_domainkey} returned NXDOMAIN. "
-                    "Your name server is not RFC 2308-conformant: it must answer "
-                    "NOERROR for an empty non-terminal node so receivers can detect "
-                    "DKIM support without knowing the selector in advance."
+                    f"{base_node} returned NXDOMAIN. "
+                    "The name server is not RFC 2308-conformant: it must answer "
+                    "NOERROR for an empty non-terminal so receivers can detect "
+                    "DKIM support without knowing the selector in advance.",
                 ],
             )
         )
@@ -34,8 +61,8 @@ def check_dkim(domain: str) -> DKIMResult:
             CheckResult(
                 name="DKIM Base Node",
                 status=Status.OK,
-                value=base_domainkey,
-                details=[f"{base_domainkey} answered NOERROR (RFC 2308-conformant)."],
+                value=base_node,
+                details=[f"{base_node} answered NOERROR (RFC 2308-conformant)."],
             )
         )
 

@@ -1,4 +1,11 @@
-"""High-level assessment API – orchestrates all checks."""
+"""High-level assessment API – orchestrates all per-domain checks.
+
+Typical usage::
+
+    from mailcheck.assessor import assess
+
+    report = assess("example.com", progress_cb=print)
+"""
 
 from __future__ import annotations
 
@@ -18,7 +25,12 @@ from mailcheck.models import FullReport, MXRecord, SMTPDiagResult
 
 
 def _resolve_mx_ips(records: list[MXRecord]) -> list[str]:
-    """Collect unique IPv4 addresses from MX records."""
+    """Return unique IPv4 addresses collected from a list of MX records.
+
+    :param records: MX records to extract IP addresses from.
+    :returns: Deduplicated list of IPv4 address strings.
+    :rtype: list[str]
+    """
     ips: list[str] = []
     for rec in records:
         for ip in rec.ip_addresses:
@@ -35,20 +47,21 @@ def assess(
     run_smtp: bool = True,
     progress_cb: Callable[[str], None] | None = None,
 ) -> FullReport:
-    """Run all mail server checks for *domain* and return a :class:`FullReport`.
+    """Run all mail server checks for *domain* and return a :class:`~mailcheck.models.FullReport`.
 
-    Parameters
-    ----------
-    domain:
-        Target domain name.
-    smtp_port:
-        SMTP port to probe (default ``25``).
-    run_blacklist:
-        Whether to run the DNSBL blacklist check (can be slow, uses threads).
-    run_smtp:
-        Whether to run SMTP diagnostics (requires outbound TCP 25 or chosen port).
-    progress_cb:
-        Optional callable invoked with a status string before each check group.
+    :param domain: The target domain name to assess (e.g. ``"example.com"``).
+    :param smtp_port: TCP port used for SMTP diagnostics.  Defaults to ``25``.
+    :param run_blacklist: When ``True`` (default), check the first MX IP
+        against 100+ DNSBLs.  This step is parallelised but can take up to
+        ~30 s on slow networks.
+    :param run_smtp: When ``True`` (default), probe each MX server via SMTP
+        and STARTTLS.  Requires outbound TCP access to *smtp_port*.
+    :param progress_cb: Optional callable invoked with a short status string
+        before each check group.  Useful for driving a progress spinner in
+        the CLI.
+    :returns: Populated :class:`~mailcheck.models.FullReport`; individual
+        fields are ``None`` when the corresponding check was skipped.
+    :rtype: ~mailcheck.models.FullReport
     """
 
     def _cb(msg: str) -> None:
@@ -57,54 +70,45 @@ def assess(
 
     report = FullReport(domain=domain)
 
-    # --- MX ---
     _cb("Checking MX records…")
     report.mx = check_mx(domain)
 
-    # --- SPF ---
     _cb("Checking SPF record…")
     report.spf = check_spf(domain)
 
-    # --- DMARC ---
     _cb("Checking DMARC record…")
     report.dmarc = check_dmarc(domain)
 
-    # --- DKIM ---
     _cb("Checking DKIM base node…")
     report.dkim = check_dkim(domain)
 
-    # --- BIMI ---
-    _cb("Checking BIMI record (selector: default)…")
+    _cb("Checking BIMI record…")
     report.bimi = check_bimi(domain)
 
-    # --- TLSRPT ---
     _cb("Checking TLSRPT record…")
     report.tlsrpt = check_tlsrpt(domain)
 
-    # --- MTA-STS ---
     _cb("Checking MTA-STS…")
     report.mta_sts = check_mta_sts(domain)
 
-    # --- SMTP diagnostics ---
     if run_smtp and report.mx and report.mx.records:
         smtp_results: list[SMTPDiagResult] = []
-        for mx_rec in report.mx.records[:3]:  # limit to first 3 MX servers
+        for mx_rec in report.mx.records[:3]:  # probe at most the first 3 MX servers
             _cb(f"SMTP diagnostics on {mx_rec.exchange}:{smtp_port}…")
             smtp_results.append(check_smtp(mx_rec.exchange, port=smtp_port))
         report.smtp = smtp_results
 
-    # --- Blacklist ---
     if run_blacklist:
         mx_ips = _resolve_mx_ips(report.mx.records) if report.mx else []
         if mx_ips:
             target_ip = mx_ips[0]
-            _cb(f"Running blacklist check on {target_ip} (this may take ~30s)…")
+            _cb(f"Blacklist check on {target_ip} (may take ~30 s)…")
             report.blacklist = check_blacklist(target_ip)
         else:
-            # fall back to domain A record
+            # Fall back to the domain's A record when no MX IPs are available.
             try:
                 ip = socket.gethostbyname(domain)
-                _cb(f"Running blacklist check on {ip}…")
+                _cb(f"Blacklist check on {ip}…")
                 report.blacklist = check_blacklist(ip)
             except socket.gaierror:
                 pass

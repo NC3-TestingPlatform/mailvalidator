@@ -1,4 +1,13 @@
-"""MTA-STS DNS TXT record and policy fetch (RFC 8461)."""
+"""MTA-STS DNS record and policy file validation (RFC 8461).
+
+MTA-STS lets domain owners publish a policy that instructs sending MTAs
+to always use TLS when delivering mail to the domain.  Two components
+are checked:
+
+1. The DNS TXT record at ``_mta-sts.<domain>`` (version + id tags).
+2. The HTTPS policy file at ``https://mta-sts.<domain>/.well-known/mta-sts.txt``
+   (mode, max_age, and mx entries).
+"""
 
 from __future__ import annotations
 
@@ -13,6 +22,32 @@ _TIMEOUT = 10
 
 
 def check_mta_sts(domain: str) -> MTASTSResult:
+    """Check the MTA-STS DNS record and policy file for *domain*.
+
+    :param domain: The domain to check MTA-STS for.
+    :returns: A :class:`~mailcheck.models.MTASTSResult` with checks for the
+        DNS record, policy file fetch, mode, max_age, and MX entries.
+    :rtype: ~mailcheck.models.MTASTSResult
+
+    Performs two checks:
+
+    1. Looks up the TXT record at ``_mta-sts.<domain>`` and validates the
+       version and id tags.
+    2. Fetches the policy file at
+       ``https://mta-sts.<domain>/.well-known/mta-sts.txt`` and validates
+       the mode, max_age, and mx entries.
+
+    Parameters
+    ----------
+    domain:
+        The domain whose MTA-STS configuration should be validated.
+
+    Returns
+    -------
+    MTASTSResult
+        Contains the raw DNS record, the parsed policy dict, and a list of
+        ``CheckResult`` items for each validated field.
+    """
     result = MTASTSResult(domain=domain)
 
     # --- DNS TXT record ---
@@ -94,9 +129,14 @@ def check_mta_sts(domain: str) -> MTASTSResult:
 
 
 def _parse_dns_record(record: str) -> dict[str, str]:
-    """Parse a DNS TXT record with semicolon-delimited tag=value pairs.
+    """Parse a DNS TXT record with semicolon-delimited ``tag=value`` pairs.
 
-    Example: ``v=STSv1; id=20240101T000000``
+    Example input: ``v=STSv1; id=20240101T000000``
+
+    :param record: Raw MTA-STS DNS TXT record value.
+    :type record: str
+    :returns: Mapping of tag names to their string values.
+    :rtype: dict[str, str]
     """
     tags: dict[str, str] = {}
     for part in record.split(";"):
@@ -110,16 +150,22 @@ def _parse_dns_record(record: str) -> dict[str, str]:
 def _parse_policy_file(text: str) -> dict[str, str | list[str]]:
     """Parse an MTA-STS policy file with ``key: value`` lines (one per line).
 
-    The ``mx`` key may appear multiple times and is therefore collected into a
-    list.  All other keys are single-valued strings.
+    The ``mx`` key may appear multiple times and is collected into a list.
+    All other keys are single-valued strings.
 
-    Example::
+    Example policy file::
 
         version: STSv1
         mode: enforce
         max_age: 604800
         mx: mail.example.com
         mx: *.example.com
+
+    :param text: Raw text content of the policy file.
+    :type text: str
+    :returns: Parsed policy mapping; ``mx`` values are returned as a list,
+        all other values as strings.
+    :rtype: dict[str, str or list[str]]
     """
     tags: dict[str, str | list[str]] = {}
     for line in text.splitlines():
@@ -141,7 +187,14 @@ def _parse_policy_file(text: str) -> dict[str, str | list[str]]:
 
 
 def _fetch_policy(url: str) -> tuple[str, str]:
-    """Return (policy_text, error_msg)."""
+    """Fetch the MTA-STS policy file from *url* over HTTPS.
+
+    :param url: Full HTTPS URL of the policy file.
+    :type url: str
+    :returns: ``(policy_text, "")`` on success, or ``("", error_message)``
+        on any network or HTTP error.
+    :rtype: tuple[str, str]
+    """
     try:
         with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:  # noqa: S310
             return resp.read().decode(errors="replace"), ""
@@ -152,6 +205,23 @@ def _fetch_policy(url: str) -> tuple[str, str]:
 
 
 def _validate_policy(policy: dict[str, str | list[str]], result: MTASTSResult) -> None:
+    """Validate MTA-STS policy file fields and append :class:`~mailcheck.models.CheckResult` items to *result*.
+
+    :param policy: Parsed key/value pairs from the policy file.
+    :param result: Result object to append check items to.
+    """
+    """Validate MTA-STS policy file fields and append :class:`~mailcheck.models.CheckResult` items to *result*.
+
+    :param policy: Parsed policy dict from :func:`_parse_policy_file`.
+    :type policy: dict[str, str or list[str]]
+    :param result: Result object to which check items are appended.
+    :type result: MTASTSResult
+    """
+    """Validate MTA-STS policy file fields and append :class:`~mailcheck.models.CheckResult` items to *result*.
+
+    :param policy: Parsed key/value pairs from the policy file.
+    :param result: Result object to append check items to.
+    """
     # mode
     mode = policy.get("mode", "")
     mode_status = {

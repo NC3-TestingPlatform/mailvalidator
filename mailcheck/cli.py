@@ -1,4 +1,24 @@
-"""mailcheck CLI – mail server configuration assessment."""
+"""mailcheck CLI – mail server configuration assessment.
+
+Sub-commands
+------------
+check       Run all checks for a domain and print a full report.
+mx          Look up MX records.
+smtp        Run SMTP diagnostics against a mail server.
+spf         Validate the SPF record.
+dmarc       Validate the DMARC record.
+dkim        Check the DKIM base node (_domainkey.<domain>).
+bimi        Validate the BIMI record.
+tlsrpt      Check the SMTP TLS Reporting record.
+mta-sts     Check the MTA-STS DNS record and policy file.
+blacklist   Check an IP address against 100+ DNS blacklists.
+
+Usage example::
+
+    mailcheck check example.com
+    mailcheck smtp mx1.example.com --port 587
+    mailcheck blacklist 203.0.113.42
+"""
 
 from __future__ import annotations
 
@@ -65,14 +85,33 @@ _HOSTNAME_RE = re.compile(
 
 
 def _validate_domain(value: str) -> str:
-    """Reject input that is not a valid domain name (requires ≥2 DNS labels)."""
+    """Reject input that is not a valid domain name.
+
+    Requires at least two DNS labels (e.g. ``"example.com"``).
+    Single-label names such as ``"localhost"`` are rejected.
+
+    :param value: Raw string from the CLI argument.
+    :returns: The validated domain string unchanged.
+    :rtype: str
+    :raises typer.BadParameter: If *value* is not a valid domain name.
+    """
     if not _DOMAIN_RE.match(value):
         raise typer.BadParameter(f"'{value}' is not a valid domain name")
     return value
 
 
 def _validate_host(value: str) -> str:
-    """Accept a bare IPv4/IPv6 address or a hostname / domain name."""
+    """Accept a bare IPv4/IPv6 address or a hostname / domain name.
+
+    Unlike :func:`_validate_domain`, single-label names (e.g.
+    ``"mailserver"``) are permitted because SMTP targets need not be FQDNs.
+
+    :param value: Raw string from the CLI argument.
+    :returns: The validated host string unchanged.
+    :rtype: str
+    :raises typer.BadParameter: If *value* is neither a valid IP address
+        nor a valid hostname.
+    """
     try:
         ipaddress.ip_address(value)
         return value
@@ -84,7 +123,13 @@ def _validate_host(value: str) -> str:
 
 
 def _validate_ip(value: str) -> str:
-    """Reject input that is not a valid IPv4 or IPv6 address."""
+    """Reject input that is not a valid IPv4 or IPv6 address.
+
+    :param value: Raw string from the CLI argument.
+    :returns: The validated IP address string unchanged.
+    :rtype: str
+    :raises typer.BadParameter: If *value* is not a valid IP address.
+    """
     try:
         ipaddress.ip_address(value)
         return value
@@ -227,7 +272,7 @@ def cmd_dkim(
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
 ) -> None:
-    """Look up and validate the DKIM record for DOMAIN."""
+    """Check the DKIM base node (_domainkey.DOMAIN) for RFC 2308 conformance."""
     print_dkim(check_dkim(domain))
 
 

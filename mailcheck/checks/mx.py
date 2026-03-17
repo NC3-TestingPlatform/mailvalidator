@@ -1,17 +1,26 @@
-"""MX record lookup – queries authoritative NS directly."""
+"""MX record lookup and basic validation.
+
+Records are fetched from the domain's own authoritative name servers
+(discovered via an NS query) so results are not subject to recursive-
+resolver caching.  A fallback to the configured system resolver is used
+when the authoritative servers cannot be reached.
+"""
 
 from __future__ import annotations
 
-import dns.exception
-import dns.rdatatype
-import dns.resolver
 
 from mailcheck.dns_utils import get_authoritative_ns, resolve, resolve_a
 from mailcheck.models import CheckResult, MXRecord, MXResult, Status
 
 
 def check_mx(domain: str) -> MXResult:
-    """Look up MX records via the domain's authoritative name servers."""
+    """Look up MX records via the domain's authoritative name servers.
+
+    :param domain: The domain whose MX records should be queried.
+    :type domain: str
+    :returns: Result containing sorted MX records and diagnostic checks.
+    :rtype: MXResult
+    """
     result = MXResult(domain=domain)
 
     # --- discover authoritative name servers ---

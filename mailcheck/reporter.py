@@ -1,4 +1,10 @@
-"""Rich-based terminal reporter for mailcheck results."""
+"""Rich-based terminal reporter for mailcheck results.
+
+All ``print_*`` functions accept the corresponding ``*Result`` dataclass
+and render it to the terminal using Rich tables and panels.  The module-
+level ``console`` instance can be imported by other modules that need to
+write to the same output stream.
+"""
 
 from __future__ import annotations
 
@@ -41,11 +47,23 @@ _STATUS_STYLE: dict[Status, tuple[str, str]] = {
 
 
 def _status_text(status: Status) -> Text:
+    """Return a styled Rich :class:`~rich.text.Text` for a :class:`~mailcheck.models.Status` value.
+
+    :param status: The status to render.
+    :returns: Styled text with icon and status label.
+    :rtype: ~rich.text.Text
+    """
     icon, style = _STATUS_STYLE.get(status, ("?", "bold magenta"))
     return Text(f"{icon} {status.value}", style=style)
 
 
 def _checks_table(checks: list[CheckResult]) -> Table:
+    """Build a Rich :class:`~rich.table.Table` from a list of check results.
+
+    :param checks: Check results to tabulate.
+    :returns: A formatted Rich table ready to print.
+    :rtype: ~rich.table.Table
+    """
     tbl = Table(show_header=True, header_style="bold blue", expand=True, padding=(0, 1))
     tbl.add_column("Check", style="bold")
     tbl.add_column("Status", justify="center")
@@ -62,6 +80,11 @@ def _checks_table(checks: list[CheckResult]) -> Table:
 
 
 def print_mx(result: MXResult) -> None:
+    """Render MX record lookup results to the terminal.
+
+    :param result: MX check result to display.
+    :type result: ~mailcheck.models.MXResult
+    """
     console.print(Panel(f"[bold]MX Records[/bold] – {result.domain}", style="blue"))
     if result.authoritative_ns:
         console.print(
@@ -71,6 +94,11 @@ def print_mx(result: MXResult) -> None:
 
 
 def print_smtp(results: list[SMTPDiagResult]) -> None:
+    """Render SMTP diagnostic results for one or more mail servers.
+
+    :param results: List of per-server SMTP diagnostic results.
+    :type results: list[~mailcheck.models.SMTPDiagResult]
+    """
     for r in results:
         console.print(
             Panel(f"[bold]SMTP Diagnostics[/bold] – {r.host}:{r.port}", style="blue")
@@ -79,16 +107,23 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
 
 
 def print_dkim(result: DKIMResult) -> None:
+    """Render DKIM base-node check results to the terminal.
+
+    :param result: DKIM check result to display.
+    :type result: ~mailcheck.models.DKIMResult
+    """
     console.print(
-        Panel(
-            f"[bold]DKIM[/bold] – _domainkey.{result.domain}",
-            style="blue",
-        )
+        Panel(f"[bold]DKIM[/bold] – _domainkey.{result.domain}", style="blue")
     )
     console.print(_checks_table(result.checks))
 
 
 def print_bimi(result: BIMIResult) -> None:
+    """Render BIMI record validation results to the terminal.
+
+    :param result: BIMI check result to display.
+    :type result: ~mailcheck.models.BIMIResult
+    """
     console.print(
         Panel(f"[bold]BIMI[/bold] – default._bimi.{result.domain}", style="blue")
     )
@@ -96,6 +131,11 @@ def print_bimi(result: BIMIResult) -> None:
 
 
 def print_tlsrpt(result: TLSRPTResult) -> None:
+    """Render TLSRPT record validation results to the terminal.
+
+    :param result: TLSRPT check result to display.
+    :type result: ~mailcheck.models.TLSRPTResult
+    """
     console.print(
         Panel(f"[bold]TLSRPT[/bold] – _smtp._tls.{result.domain}", style="blue")
     )
@@ -103,6 +143,11 @@ def print_tlsrpt(result: TLSRPTResult) -> None:
 
 
 def print_blacklist(result: BlacklistResult) -> None:
+    """Render DNS blacklist check results to the terminal.
+
+    :param result: Blacklist check result to display.
+    :type result: ~mailcheck.models.BlacklistResult
+    """
     console.print(
         Panel(f"[bold]Blacklist / Blocklist Check[/bold] – {result.ip}", style="blue")
     )
@@ -116,21 +161,42 @@ def print_blacklist(result: BlacklistResult) -> None:
 
 
 def print_spf(result: SPFResult) -> None:
+    """Render SPF record validation results to the terminal.
+
+    :param result: SPF check result to display.
+    :type result: ~mailcheck.models.SPFResult
+    """
     console.print(Panel(f"[bold]SPF[/bold] – {result.domain}", style="blue"))
     console.print(_checks_table(result.checks))
 
 
 def print_dmarc(result: DMARCResult) -> None:
+    """Render DMARC record validation results to the terminal.
+
+    :param result: DMARC check result to display.
+    :type result: ~mailcheck.models.DMARCResult
+    """
     console.print(Panel(f"[bold]DMARC[/bold] – _dmarc.{result.domain}", style="blue"))
     console.print(_checks_table(result.checks))
 
 
 def print_mta_sts(result: MTASTSResult) -> None:
+    """Render MTA-STS record and policy validation results to the terminal.
+
+    :param result: MTA-STS check result to display.
+    :type result: ~mailcheck.models.MTASTSResult
+    """
     console.print(Panel(f"[bold]MTA-STS[/bold] – {result.domain}", style="blue"))
     console.print(_checks_table(result.checks))
 
 
 def print_full_report(report: FullReport) -> None:
+    """Render the complete :class:`~mailcheck.models.FullReport` to the terminal.
+
+    Sections are printed in a fixed order that mirrors the check sequence
+    in :func:`~mailcheck.assessor.assess`.  Sections whose result is ``None``
+    are silently skipped.
+    """
     console.rule(f"[bold cyan]Mail Server Report: {report.domain}[/bold cyan]")
 
     if report.mx:

@@ -16,8 +16,8 @@ RFC 7208 §7 macros (e.g. %{d}, %{i}) inside `include:` or `redirect=` targets
 cannot be expanded without a live sender IP and envelope-from address.  Targets
 that contain macros are noted in the output but not fetched or counted.
 
-Lookup cost table (matches the referenced test procedure)
----------------------------------------------------------
+Lookup cost table
+-----------------
   Counted:  redirect, include, a, mx, ptr, exists
   NOT counted: all, ip4, ip6, exp
 """
@@ -60,7 +60,13 @@ class _SPFNode:
 
 
 def _fetch_spf(domain: str) -> str | None:
-    """Fetch the SPF TXT record for *domain*, or None if absent / ambiguous."""
+    """Fetch the SPF TXT record for *domain*, or ``None`` if absent or ambiguous.
+
+    :param domain: Domain to fetch the SPF record for.
+    :returns: The raw SPF TXT string, or ``None`` if no unambiguous record
+        was found.
+    :rtype: str | None
+    """
     records = resolve(domain, "TXT")
     spf = [r.strip('"') for r in records if r.strip('"').startswith("v=spf1")]
     return spf[0] if len(spf) == 1 else None
@@ -72,6 +78,15 @@ def _walk_spf(domain: str, visited: set[str], depth: int = 0) -> _SPFNode:
     *visited* tracks domains already seen in this branch to break loops.
     *depth* is a secondary hard cap (RFC 7208 does not define a tree-depth
     limit, but we must guard against adversarial or misconfigured records).
+
+    :param domain: Domain name to resolve.
+    :type domain: str
+    :param visited: Set of domain names already visited in this branch.
+    :type visited: set[str]
+    :param depth: Current recursion depth (internal; starts at 0).
+    :type depth: int
+    :returns: Populated SPF tree node.
+    :rtype: _SPFNode
     """
     node = _SPFNode(domain=domain)
 
@@ -111,9 +126,14 @@ def _walk_spf(domain: str, visited: set[str], depth: int = 0) -> _SPFNode:
 def _count_lookups(node: _SPFNode) -> int:
     """Return the total DNS lookup cost of the tree rooted at *node*.
 
-    Per RFC 7208 §4.6.4 each of: include, redirect, a, mx, ptr, exists
-    counts as one lookup.  Macro-expanded targets are not counted (we cannot
-    evaluate them without a live session).
+    Per RFC 7208 §4.6.4 each of: ``include``, ``redirect``, ``a``, ``mx``,
+    ``ptr``, ``exists`` counts as one lookup.  Macro-expanded targets are
+    not counted because they cannot be evaluated without a live session.
+
+    :param node: Root of the SPF resolution tree.
+    :type node: _SPFNode
+    :returns: Total number of DNS lookups in this tree.
+    :rtype: int
     """
     if node.error or node.macro_skip:
         return 0
@@ -139,7 +159,15 @@ def _count_lookups(node: _SPFNode) -> int:
 
 
 def _flatten_detail_lines(node: _SPFNode, indent: int = 0) -> list[str]:
-    """Render the resolution tree as indented human-readable lines."""
+    """Render the resolution tree as indented human-readable lines.
+
+    :param node: Root of the SPF resolution tree.
+    :type node: _SPFNode
+    :param indent: Current indentation level (internal; starts at 0).
+    :type indent: int
+    :returns: Lines of text representing the tree.
+    :rtype: list[str]
+    """
     pad = "  " * indent
     arrow = "↳ " if indent else ""
     lines: list[str] = []
@@ -166,15 +194,28 @@ def _flatten_detail_lines(node: _SPFNode, indent: int = 0) -> list[str]:
 
 
 def _has_redirect(terms: list[str]) -> bool:
+    """Return ``True`` if *terms* contains a ``redirect=`` modifier.
+
+    :param terms: Whitespace-split tokens from an SPF record.
+    :rtype: bool
+    """
     return any(t.lstrip("+-~?").lower().startswith("redirect=") for t in terms)
 
 
 def _effective_all(record: str, tree: _SPFNode | None) -> str | None:
-    """Return the effective 'all' qualifier for the record.
+    """Return the effective ``all`` qualifier for the record.
 
-    If the top-level record has no `all` but has a `redirect=`, follow the
-    redirect to find its `all` term (RFC 7208 §6.1: redirect replaces the
-    whole record when there is no explicit `all`).
+    If the top-level record has no ``all`` but has a ``redirect=``, follows
+    the redirect to find its ``all`` term (RFC 7208 §6.1: redirect replaces
+    the whole record when no explicit ``all`` is present).
+
+    :param record: Raw top-level SPF record string.
+    :type record: str
+    :param tree: Resolved SPF tree, or ``None`` if not yet resolved.
+    :type tree: _SPFNode or None
+    :returns: The ``all`` qualifier string (e.g. ``"-all"``), or ``None``
+        if neither the record nor its redirect contains one.
+    :rtype: str or None
     """
     terms = record.split()
     all_term = next((t for t in terms if re.match(r"[+\-~?]?all$", t, re.I)), None)
@@ -197,6 +238,21 @@ def _effective_all(record: str, tree: _SPFNode | None) -> str | None:
 
 
 def check_spf(domain: str) -> SPFResult:
+    """Look up and validate the SPF record for *domain* (RFC 7208).
+
+    Recursively resolves ``include:`` and ``redirect=`` targets to report
+    the true cross-tree DNS lookup count and the full authorised sender
+    tree.  Macro-containing targets (RFC 7208 §7) are noted but not
+    followed.
+
+    :param domain: The domain whose SPF TXT record should be validated.
+    :type domain: str
+    :returns: Result containing the raw record string and
+        :class:`~mailcheck.models.CheckResult` items for the version tag,
+        policy (``all`` qualifier), include resolution tree, DNS lookup
+        count, and any ``ptr`` deprecation warnings.
+    :rtype: SPFResult
+    """
     result = SPFResult(domain=domain)
 
     records = resolve(domain, "TXT")
@@ -234,6 +290,12 @@ def check_spf(domain: str) -> SPFResult:
 
 
 def _validate_spf(record: str, domain: str, result: SPFResult) -> None:
+    """Validate an SPF record string and append results to *result*.
+
+    :param record: Raw SPF TXT record string (e.g. ``"v=spf1 include:… -all"``).
+    :param domain: Domain the record belongs to; used as root for tree walking.
+    :param result: :class:`~mailcheck.models.SPFResult` to append check items to.
+    """
     terms = record.split()
 
     # --- Version tag ---
@@ -307,7 +369,7 @@ def _validate_spf(record: str, domain: str, result: SPFResult) -> None:
     # --- Include / redirect resolution details ---
     if tree is not None:
         detail_lines = _flatten_detail_lines(tree)
-        has_errors = any("⚠" in l for l in detail_lines)
+        has_errors = any("⚠" in dl for dl in detail_lines)
         result.checks.append(
             CheckResult(
                 name="SPF Include Resolution",
@@ -364,18 +426,23 @@ def _emit_all_check(
     result: SPFResult,
     via_redirect: bool = False,
 ) -> None:
-    """Append the 'SPF Policy' CheckResult for a given `all` qualifier.
+    """Append the ``SPF Policy`` :class:`~mailcheck.models.CheckResult` for *all_term*.
 
-    Grading follows the referenced test procedure:
-      -all  → OK       (strict fail)
-      ~all  → OK       (softfail; preferred for sending domains per the spec)
-      ?all  → WARNING  (neutral; no protection)
-      +all  → ERROR    (pass; critical misconfiguration)
-      all   → OK       (bare 'all' without qualifier defaults to '+' per RFC,
-                        but in practice is treated as '-all' by most tools;
-                        we treat it as OK with a note)
+    Grading per RFC 7208 and the NCSC-NL mail test procedure:
+
+    - ``-all`` → :attr:`~mailcheck.models.Status.OK` (strict fail).
+    - ``~all`` → :attr:`~mailcheck.models.Status.OK` (softfail; preferred
+      for sending domains to avoid blocking forwarded mail).
+    - ``?all`` → :attr:`~mailcheck.models.Status.WARNING` (neutral; no protection).
+    - ``+all`` → :attr:`~mailcheck.models.Status.ERROR` (pass; critical
+      misconfiguration).
+
+    :param all_term: The raw ``all`` term from the SPF record (e.g. ``"-all"``).
+    :param result: :class:`~mailcheck.models.SPFResult` to append the check to.
+    :param via_redirect: When ``True``, the term was found in a
+        ``redirect=`` target rather than the top-level record.
     """
-    suffix = f" (via redirect)" if via_redirect else ""
+    suffix = " (via redirect)" if via_redirect else ""
     q = all_term[0] if all_term[0] in "+-~?" else "-"  # bare 'all' → treat as -all
 
     if q == "-":

@@ -2,25 +2,38 @@
 
 Checks performed
 ----------------
-Plain SMTP
-  • Connect + banner latency
-  • Reverse DNS (PTR) for the server IP
-  • STARTTLS advertisement
-  • Open relay
 
-TLS (when STARTTLS is available)
-  • Accepted TLS versions (active per-version probe)
-  • Accepted cipher suites per version, in server-preference order
-  • Server cipher-preference enforcement and prescribed ordering
-  • Key exchange mechanism and group/curve
-  • Key-exchange hash function
-  • TLS compression (CRIME)
-  • Secure renegotiation (RFC 5746)
-  • Certificate trust chain, public key, signature, domain match, and expiry
+Plain SMTP:
 
-DNS
-  • CAA records (walks up the DNS hierarchy)
-  • DANE/TLSA existence, fingerprint match, and rollover scheme
+- Connect latency and banner
+- Reverse DNS (PTR) for the server IP
+- STARTTLS advertisement
+- Open relay
+
+TLS (when STARTTLS is available):
+
+- Accepted TLS versions (active per-version probe)
+- Accepted cipher suites per version, in server-preference order
+- Server cipher-preference enforcement and prescribed ordering
+- Key exchange mechanism and group/curve
+- Key-exchange hash function
+- TLS compression (CRIME attack surface)
+- Secure renegotiation (RFC 5746)
+- Certificate trust chain, public key, signature algorithm, domain match, and expiry
+
+DNS:
+
+- CAA records (walks up the DNS hierarchy per RFC 8659)
+- DANE/TLSA existence, fingerprint verification, and rollover scheme assessment
+
+Design notes
+------------
+Each TLS probe opens a fresh SMTP connection so that version and cipher
+constraints are applied cleanly.  The ``_probe_tls`` function runs once to
+collect session metadata; all subsequent check functions read from the
+:class:`~mailcheck.models.TLSDetails` object it returns rather than
+reconnecting.  Only :func:`_check_dane` may open an additional connection
+when the initial probe did not store the DER certificate (rare fallback).
 """
 
 from __future__ import annotations
@@ -46,12 +59,12 @@ _TIMEOUT = 10  # seconds per blocking network call
 # ---------------------------------------------------------------------------
 # Cipher classification  (NCSC-NL "IT Security Guidelines for TLS" v2.1)
 # ---------------------------------------------------------------------------
-# Tier    Criteria
-# ------  -----------------------------------------------------------------
-# Good        Forward-secret AEAD + strong key exchange
-# Sufficient  Forward secret but CBC mode, or DHE with larger overhead
-# Phase-out   No forward secrecy (RSA key exchange) or weak block cipher
-# Insufficient Anything else (exported, NULL, eNULL, …)
+# Tier          Criteria
+# ----------    --------------------------------------------------------------
+# Good          Forward-secret AEAD cipher + strong key exchange
+# Sufficient    Forward secret but CBC mode, or DHE with higher CPU overhead
+# Phase-out     No forward secrecy (RSA key exchange) or weak block cipher
+# Insufficient  Anything else (exported, NULL, eNULL, anonymous, …)
 
 _GOOD_CIPHERS: frozenset[str] = frozenset(
     {
@@ -101,7 +114,7 @@ _PHASE_OUT_CIPHERS: frozenset[str] = frozenset(
         "AES256-SHA",
         "AES128-SHA256",
         "AES128-SHA",
-        # 3DES – 64-bit block cipher (Sweet32 vulnerability)
+        # 3DES – 64-bit block cipher (Sweet32 vulnerability, CVE-2016-2183)
         "ECDHE-ECDSA-DES-CBC3-SHA",
         "ECDHE-RSA-DES-CBC3-SHA",
         "DHE-RSA-DES-CBC3-SHA",
@@ -111,7 +124,16 @@ _PHASE_OUT_CIPHERS: frozenset[str] = frozenset(
 
 
 def _classify_cipher(name: str) -> Status:
-    """Map a cipher name to its security tier."""
+    """Map an OpenSSL cipher suite name to its NCSC-NL security tier.
+
+    :param name: OpenSSL cipher suite name (e.g. ``"ECDHE-RSA-AES256-GCM-SHA384"``).
+    :type name: str
+    :returns: :attr:`~mailcheck.models.Status.GOOD`,
+        :attr:`~mailcheck.models.Status.SUFFICIENT`,
+        :attr:`~mailcheck.models.Status.PHASE_OUT`, or
+        :attr:`~mailcheck.models.Status.INSUFFICIENT`.
+    :rtype: ~mailcheck.models.Status
+    """
     if name in _GOOD_CIPHERS:
         return Status.GOOD
     if name in _SUFFICIENT_CIPHERS:
@@ -127,7 +149,17 @@ def _classify_cipher(name: str) -> Status:
 
 
 def _tls_version_status(version: str) -> Status:
-    """Map a TLS version string to its security status."""
+    """Map a TLS version string to its security status.
+
+    :param version: TLS version string as returned by
+        :meth:`ssl.SSLSocket.version` (e.g. ``"TLSv1.3"``).
+    :type version: str
+    :returns: :attr:`~mailcheck.models.Status.OK` for TLS 1.3,
+        :attr:`~mailcheck.models.Status.SUFFICIENT` for TLS 1.2,
+        :attr:`~mailcheck.models.Status.PHASE_OUT` for TLS 1.0/1.1,
+        :attr:`~mailcheck.models.Status.INSUFFICIENT` otherwise.
+    :rtype: ~mailcheck.models.Status
+    """
     if version == "TLSv1.3":
         return Status.OK
     if version == "TLSv1.2":
@@ -154,7 +186,18 @@ _PHASE_OUT_EC_CURVES: frozenset[str] = frozenset({"secp224r1"})
 
 
 def _classify_ec_curve(curve: str) -> Status:
-    """Classify an EC curve name used for key exchange."""
+    """Classify a named EC curve used for key exchange.
+
+    :param curve: Curve name as reported by OpenSSL (e.g. ``"x25519"``).
+        Case-insensitive.
+    :type curve: str
+    :returns: :attr:`~mailcheck.models.Status.GOOD` for recommended curves,
+        :attr:`~mailcheck.models.Status.PHASE_OUT` for deprecated ones,
+        :attr:`~mailcheck.models.Status.INSUFFICIENT` for other named curves,
+        :attr:`~mailcheck.models.Status.INFO` when the name is empty (not
+        exposed by this Python/OpenSSL build).
+    :rtype: ~mailcheck.models.Status
+    """
     c = curve.lower()
     if c in _GOOD_EC_CURVES:
         return Status.GOOD
@@ -162,18 +205,18 @@ def _classify_ec_curve(curve: str) -> Status:
         return Status.PHASE_OUT
     if c:
         return Status.INSUFFICIENT
-    return Status.INFO  # name unavailable from this Python/OpenSSL build
+    return Status.INFO
 
 
-# Kept for test compatibility
+# Alias kept for test compatibility
 _classify_ec_curve_kex = _classify_ec_curve
 
 
 # ---------------------------------------------------------------------------
-# Shared lookup tables (used by multiple check functions)
+# Shared lookup tables
 # ---------------------------------------------------------------------------
 
-# Severity rank used to bubble up the worst status across ciphers/versions.
+# Severity rank for bubbling up the worst status across a set of ciphers.
 # INFO is treated as "unknown" and never overrides a real grade.
 _STATUS_RANK: dict[Status, int] = {
     Status.INFO: -1,
@@ -183,7 +226,7 @@ _STATUS_RANK: dict[Status, int] = {
     Status.INSUFFICIENT: 3,
 }
 
-# Icon shown next to each cipher in the detail lines
+# Icon prefix used when listing individual ciphers in check detail lines.
 _CIPHER_ICON: dict[str, str] = {
     "GOOD": "✔",
     "SUFFICIENT": "~",
@@ -193,7 +236,7 @@ _CIPHER_ICON: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Certificate parsing helper
+# Certificate parsing
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +244,14 @@ def _cert_info(der: bytes) -> dict:
     """Parse a DER-encoded X.509 certificate and return a flat metadata dict.
 
     Requires the *cryptography* package (already a project dependency).
-    Returns an empty dict if parsing fails so callers can use .get() safely.
+
+    :param der: DER-encoded certificate bytes.
+    :type der: bytes
+    :returns: Dict with keys ``subject``, ``issuer``, ``not_after``,
+        ``sig_alg``, ``san``, ``pubkey_type``, ``pubkey_bits``,
+        ``pubkey_curve``.  Returns ``{}`` if parsing fails so callers can
+        use :meth:`dict.get` safely.
+    :rtype: dict
     """
     try:
         import cryptography.hazmat.primitives.asymmetric.ec as _ec
@@ -249,7 +299,12 @@ def _cert_info(der: bytes) -> dict:
 
 
 def _is_ip(host: str) -> bool:
-    """Return True if *host* is a bare IPv4 or IPv6 address (not a hostname)."""
+    """Return ``True`` if *host* is a bare IPv4 or IPv6 address (not a hostname).
+
+    :param host: String to test.
+    :type host: str
+    :rtype: bool
+    """
     try:
         ipaddress.ip_address(host)
         return True
@@ -258,9 +313,16 @@ def _is_ip(host: str) -> bool:
 
 
 def _connect_plain(host: str, port: int) -> tuple[smtplib.SMTP, float, str]:
-    """Open a plain TCP connection and return (smtp, connect_ms, banner).
+    """Open a plain TCP connection to an SMTP server.
 
-    Raises OSError / SMTPException on failure; callers are expected to catch.
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: TCP port to connect to.
+    :type port: int
+    :returns: Tuple of ``(smtp_client, connect_time_ms, banner_string)``.
+    :rtype: tuple[smtplib.SMTP, float, str]
+    :raises OSError: On TCP connection failure.
+    :raises smtplib.SMTPException: On SMTP-level failure.
     """
     t0 = time.monotonic()
     smtp = smtplib.SMTP(timeout=_TIMEOUT)
@@ -274,10 +336,17 @@ def _no_verify_ctx(
     tls_min: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2,
     tls_max: ssl.TLSVersion = ssl.TLSVersion.TLSv1_3,
 ) -> ssl.SSLContext:
-    """Return a TLS_CLIENT context that accepts any certificate.
+    """Return a ``TLS_CLIENT`` :class:`ssl.SSLContext` that accepts any certificate.
 
-    Used for diagnostic probes where we inspect the cert ourselves rather
-    than relying on the system trust store.
+    Used for diagnostic probes where certificates are inspected manually
+    rather than relying on the system trust store.
+
+    :param tls_min: Minimum TLS version to negotiate.
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version to negotiate.
+    :type tls_max: ssl.TLSVersion
+    :returns: A no-verify :class:`ssl.SSLContext`.
+    :rtype: ssl.SSLContext
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
@@ -288,12 +357,19 @@ def _no_verify_ctx(
 
 
 def _set_sni(smtp: smtplib.SMTP, sni_hostname: str | None, fallback: str) -> None:
-    """Set smtp._host so that smtplib passes the correct SNI server_hostname.
+    """Set ``smtp._host`` so that smtplib passes the correct SNI ``server_hostname``.
 
-    smtplib reads smtp._host when building the ssl.wrap_socket() call.
-    When SMTP() is constructed without a host argument (our pattern: SMTP()
-    then .connect()), _host may be empty, which raises
-    "server_hostname cannot be empty" on Python ≥ 3.13.
+    ``smtplib`` reads ``smtp._host`` when calling ``ssl.wrap_socket()``.
+    When ``SMTP()`` is constructed without a host argument (our pattern:
+    ``SMTP()`` then ``.connect()``), ``_host`` may be empty, which raises
+    ``"server_hostname cannot be empty"`` on Python ≥ 3.13.
+
+    :param smtp: SMTP client instance whose ``_host`` attribute will be set.
+    :type smtp: smtplib.SMTP
+    :param sni_hostname: Hostname to use for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param fallback: Value to use when *sni_hostname* is ``None``.
+    :type fallback: str
     """
     smtp._host = sni_hostname if sni_hostname else fallback  # type: ignore[attr-defined]
 
@@ -307,8 +383,22 @@ def _starttls_and_get_cipher(
 ) -> str | None:
     """Perform a STARTTLS handshake with *ctx* and return the negotiated cipher name.
 
-    Returns None on any failure (connection refused, STARTTLS absent, SSL error).
-    Cleans up the socket whether or not the handshake succeeds.
+    Opens a fresh connection for each call.  Cleans up the socket whether or
+    not the handshake succeeds.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param ctx: Pre-configured :class:`ssl.SSLContext` to use for the handshake.
+    :type ctx: ssl.SSLContext
+    :returns: Negotiated cipher name, or ``None`` on any failure
+        (connection refused, STARTTLS absent, SSL error).
+    :rtype: str or None
     """
     try:
         smtp, _, _ = _connect_plain(host, port)
@@ -342,35 +432,37 @@ def _probe_tls(
     port: int,
     helo_domain: str,
 ) -> tuple[TLSDetails | None, str, str | None]:
-    """Connect via STARTTLS and collect session metadata into a TLSDetails object.
+    """Connect via STARTTLS and populate a :class:`~mailcheck.models.TLSDetails` object.
 
-    Returns (details, error_message, sni_hostname).
-    On failure, details is None and error_message is non-empty.
+    **SNI**: SNI requires a DNS hostname, not an IP address.  For bare IPs
+    ``sni_hostname`` is set to ``None`` and ``check_hostname`` is disabled on
+    the context, because Python ssl raises ``ValueError: server_hostname cannot
+    be empty`` on Python ≥ 3.13.
 
-    SNI note
-    --------
-    SNI requires a DNS hostname, not an IP address.  For bare IPs we set
-    sni_hostname=None and disable check_hostname on the context, because
-    Python ssl rejects an empty server_hostname string (raised as ValueError
-    on Python ≥ 3.13).
+    **Certificate trust**: the trust chain is verified with a second,
+    fully-verifying STARTTLS handshake (``CERT_REQUIRED``, ``check_hostname=False``
+    to isolate chain failure from name mismatch).  A bare ``wrap_socket()`` on
+    port 25 would fail with ``WRONG_VERSION_NUMBER`` because the server speaks
+    plain SMTP until STARTTLS is negotiated.
 
-    Certificate trust note
-    ----------------------
-    We verify the trust chain with a second, fully-verifying STARTTLS
-    handshake rather than a bare wrap_socket() call.  A plain wrap_socket()
-    on port 25 fails with WRONG_VERSION_NUMBER because the server speaks SMTP
-    (not raw TLS) until STARTTLS is negotiated.
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :returns: Tuple of ``(details, error_message, sni_hostname)``.
+        On failure *details* is ``None`` and *error_message* is non-empty.
+    :rtype: tuple[TLSDetails or None, str, str or None]
     """
     sni_hostname: str | None = None if _is_ip(host) else host
     details = TLSDetails()
 
-    # Plain connect
     try:
         smtp, _, _ = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException) as exc:
         return None, str(exc), None
 
-    # EHLO + STARTTLS upgrade (no certificate verification; we inspect manually)
     try:
         smtp.ehlo(helo_domain)
         if not smtp.has_extn("STARTTLS"):
@@ -391,18 +483,16 @@ def _probe_tls(
         smtp.quit()
         return None, "Socket is not an SSLSocket after STARTTLS", None
 
-    # --- Session metadata ---
+    # Session metadata
     details.tls_version = raw.version() or ""
-
     cipher_info = raw.cipher()  # (name, protocol_version, key_bits)
     if cipher_info:
         details.cipher_name = cipher_info[0]
         details.cipher_bits = cipher_info[2] or 0
-
     details.compression = raw.compression() or ""
 
-    # Key-exchange group (available via the internal _sslobj.group() on some
-    # CPython + OpenSSL builds; absent on others – fail silently).
+    # Key-exchange group – available via the internal _sslobj.group() on some
+    # CPython + OpenSSL builds; absent on others – fail silently.
     try:
         sslobj = getattr(raw, "_sslobj", None)
         group_fn = getattr(sslobj, "group", None) if sslobj else None
@@ -411,7 +501,7 @@ def _probe_tls(
     except Exception:
         pass
 
-    # --- Certificate ---
+    # Certificate
     der = raw.getpeercert(binary_form=True)
     if der:
         details._cert_der = der  # type: ignore[attr-defined]  # stashed for DANE reuse
@@ -425,23 +515,17 @@ def _probe_tls(
         details.cert_pubkey_bits = info.get("pubkey_bits", 0)
         details.cert_pubkey_curve = info.get("pubkey_curve", "")
 
-        # Chain-of-trust verification: repeat STARTTLS with CERT_REQUIRED but
-        # check_hostname=False so that a name mismatch does not mask a genuine
-        # chain failure.  Hostname correctness is a separate concern handled by
-        # _check_certificate → "Certificate Domain Match".
-        #
-        # We need SNI for the server to present the right certificate, so this
-        # check is skipped for bare IP addresses (no meaningful hostname to send).
+        # Chain-of-trust: second STARTTLS with CERT_REQUIRED but check_hostname=False
+        # so a name mismatch does not mask a genuine chain failure.  Hostname
+        # correctness is handled separately by _check_certificate.
         if sni_hostname:
             try:
                 chain_ctx = ssl.create_default_context()
-                chain_ctx.check_hostname = (
-                    False  # isolate chain validity from name matching
-                )
+                chain_ctx.check_hostname = False  # isolate chain from name matching
                 chain_smtp = smtplib.SMTP(timeout=_TIMEOUT)
                 chain_smtp.connect(host, port)
                 chain_smtp.ehlo(helo_domain)
-                chain_smtp._host = sni_hostname  # type: ignore[attr-defined]  # SNI only
+                chain_smtp._host = sni_hostname  # type: ignore[attr-defined]
                 chain_smtp.starttls(context=chain_ctx)
                 try:
                     chain_smtp.quit()
@@ -453,10 +537,10 @@ def _probe_tls(
             except (OSError, smtplib.SMTPException):
                 details.cert_trusted = None  # could not connect; result unknown
         else:
-            details.cert_trusted = None  # SNI unavailable; chain cannot be verified
+            details.cert_trusted = None  # SNI unavailable; cannot verify chain
 
-    # Secure renegotiation: presence of the tls-unique channel binding implies
-    # the RFC 5746 Renegotiation Info extension was exchanged.
+    # Secure renegotiation: tls-unique channel binding is non-null iff the
+    # RFC 5746 Renegotiation Info extension was exchanged.
     try:
         details.secure_renegotiation = raw.get_channel_binding("tls-unique") is not None
     except Exception:
@@ -476,12 +560,12 @@ def _probe_tls(
 # Strategy: pin minimum_version = maximum_version = target and attempt STARTTLS.
 #
 # TLS 1.0 / 1.1 require SECLEVEL=0 on the client context.  Modern OpenSSL
-# defaults to SECLEVEL=2, which rejects the weak ciphers those versions need.
-# Without lowering it, handshakes fail on our side and the server is falsely
+# defaults to SECLEVEL=2 which rejects the weak ciphers those versions need;
+# without lowering it, handshakes fail on our side and the server is falsely
 # reported as "not supported".  This is the same approach used by testssl.sh.
 #
 # TLS 1.0/1.1 entries are added only when the runtime OpenSSL exposes them
-# (they are compiled out on hardened builds such as Fedora/RHEL).
+# (they are compiled out on hardened builds such as Fedora / RHEL).
 # ---------------------------------------------------------------------------
 
 _TLS_VERSION_PROBES: list[tuple[str, ssl.TLSVersion, ssl.TLSVersion]] = [
@@ -509,7 +593,22 @@ def _probe_single_tls_version(
     tls_min: ssl.TLSVersion,
     tls_max: ssl.TLSVersion,
 ) -> bool:
-    """Return True if the server completes STARTTLS at exactly this TLS version."""
+    """Return ``True`` if the server completes STARTTLS at exactly this TLS version.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param tls_min: Minimum TLS version (pinned equal to *tls_max*).
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version (pinned equal to *tls_min*).
+    :type tls_max: ssl.TLSVersion
+    :rtype: bool
+    """
     try:
         smtp, _, _ = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException):
@@ -547,7 +646,23 @@ def _check_tls_version(
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
-    """Probe each TLS version individually and report which ones are accepted."""
+    """Probe each TLS version individually and append a graded summary result.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param details: TLS details object; ``tls_version`` is used in the
+        result value field.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which the new
+        :class:`~mailcheck.models.CheckResult` is appended.
+    :type checks: list[~mailcheck.models.CheckResult]
+    """
     accepted: list[str] = []
     rejected: list[str] = []
 
@@ -612,14 +727,14 @@ def _check_tls_version(
 # Cipher enumeration
 #
 # OpenSSL uses two separate APIs for cipher selection:
-#   • TLS 1.3 suites  →  SSL_CTX_set_ciphersuites   (Python: set_ciphersuites())
-#   • TLS ≤1.2 ciphers →  SSL_CTX_set_cipher_list    (Python: set_ciphers())
+#   TLS 1.3 suites   →  SSL_CTX_set_ciphersuites  (Python: set_ciphersuites())
+#   TLS ≤1.2 ciphers →  SSL_CTX_set_cipher_list   (Python: set_ciphers())
 #
 # Mixing them causes errors:
 #   set_ciphers("TLS_AES_256_GCM_SHA384")  →  SSLError: No cipher can be selected
 #   set_ciphersuites(…) may raise AttributeError on older OpenSSL builds
 #
-# We therefore handle TLS 1.3 and TLS ≤1.2 via separate code paths.
+# TLS 1.3 and TLS ≤1.2 are therefore handled via completely separate code paths.
 # ---------------------------------------------------------------------------
 
 # TLS 1.3 standard ciphersuites (RFC 8446 §B.4), in recommended priority order.
@@ -671,7 +786,7 @@ _TLS12_AND_BELOW_CIPHERS: list[str] = [
     "DES-CBC3-SHA",
 ]
 
-# Flat union, used by helpers that need to reference both lists.
+# Flat union used by helpers that reference both lists.
 _ALL_KNOWN_CIPHERS: list[str] = _TLS13_CIPHERSUITES + _TLS12_AND_BELOW_CIPHERS
 
 
@@ -681,21 +796,29 @@ def _make_cipher_probe_ctx(
     tls_max: ssl.TLSVersion,
     seclevel0: bool = False,
 ) -> ssl.SSLContext:
-    """Build a no-verify SSLContext restricted to a single cipher and version range.
+    """Build a no-verify :class:`ssl.SSLContext` restricted to one cipher and version range.
 
-    TLS 1.3
-    -------
-    A context pinned to TLSv1_3 (min=max) already contains only the three
-    standard TLS 1.3 suites.  Calling set_ciphers() with a TLS 1.3 name
-    raises SSLError on most builds, so we leave the cipher list alone and
-    rely solely on the version pin.  Where set_ciphersuites() is available
-    (newer OpenSSL) the caller uses it directly to isolate individual suites.
+    **TLS 1.3**: a context pinned to ``TLSv1_3`` (min=max) already contains
+    only the three standard suites.  Calling :meth:`ssl.SSLContext.set_ciphers`
+    with a TLS 1.3 name raises :exc:`ssl.SSLError` on most builds, so the
+    cipher list is left alone; the version pin is the restriction.
 
-    TLS ≤1.2
-    ---------
-    We call set_ciphers() for the target cipher and attempt set_ciphersuites("")
-    to suppress TLS 1.3 suites (no-op on builds that lack the method, which is
-    fine because the version pin already excludes TLS 1.3).
+    **TLS ≤1.2**: :meth:`ssl.SSLContext.set_ciphers` is called for the target
+    cipher, and :meth:`ssl.SSLContext.set_ciphersuites` (where available)
+    suppresses TLS 1.3 suites.
+
+    :param cipher: OpenSSL cipher name to restrict the context to.
+    :type cipher: str
+    :param tls_min: Minimum TLS version.
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version.
+    :type tls_max: ssl.TLSVersion
+    :param seclevel0: When ``True``, append ``":@SECLEVEL=0"`` to the cipher
+        string to allow weak ciphers required by TLS 1.0/1.1.
+    :type seclevel0: bool
+    :returns: Configured no-verify :class:`ssl.SSLContext`.
+    :rtype: ssl.SSLContext
+    :raises ssl.SSLError: If *cipher* is not recognised by OpenSSL.
     """
     ctx = _no_verify_ctx(tls_min, tls_max)
 
@@ -720,7 +843,26 @@ def _try_cipher(
     tls_max: ssl.TLSVersion,
     seclevel0: bool = False,
 ) -> bool:
-    """Return True if the server accepts *cipher* for the given TLS version."""
+    """Return ``True`` if the server accepts *cipher* for the given TLS version.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param cipher: OpenSSL cipher name to probe.
+    :type cipher: str
+    :param tls_min: Minimum TLS version.
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version.
+    :type tls_max: ssl.TLSVersion
+    :param seclevel0: Lower OpenSSL SECLEVEL to 0 for legacy cipher support.
+    :type seclevel0: bool
+    :rtype: bool
+    """
     try:
         smtp, _, _ = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException):
@@ -751,13 +893,24 @@ def _enumerate_tls13_ciphers(
 ) -> list[str]:
     """Return the accepted TLS 1.3 ciphersuites in server-preference order.
 
-    When set_ciphersuites() is available, each suite is probed in isolation.
-    When unavailable (older OpenSSL), a single connection reveals the server's
-    top preference; all three standard suites are then reported as accepted
-    because we cannot exclude any of them without the API.
+    When :meth:`ssl.SSLContext.set_ciphersuites` is available, each suite is
+    probed in isolation.  On older OpenSSL builds a single connection is made
+    and all three standard suites are reported as accepted (they cannot be
+    isolated without the API).
 
-    Results are always returned in RFC 8446 standard order (strongest first),
-    which is the order servers are required to enforce.
+    Results are returned in RFC 8446 standard order (strongest first), which
+    is the order servers are required to enforce.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :returns: Accepted TLS 1.3 suite names in server-preference order.
+    :rtype: list[str]
     """
     has_set_ciphersuites = hasattr(
         ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT), "set_ciphersuites"
@@ -774,7 +927,7 @@ def _enumerate_tls13_ciphers(
             if negotiated == suite:
                 accepted.add(suite)
     else:
-        # Fallback: one connection, note whichever suite the server prefers.
+        # Fallback: one connection reveals the server's top-preferred suite.
         ctx = _no_verify_ctx(ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3)
         negotiated = _starttls_and_get_cipher(
             host, port, helo_domain, sni_hostname, ctx
@@ -798,14 +951,34 @@ def _enumerate_ciphers_for_version(
 ) -> list[str]:
     """Return accepted ciphers for one TLS version in server-preference order.
 
-    TLS 1.3 is delegated to _enumerate_tls13_ciphers (separate API path).
+    TLS 1.3 is delegated to :func:`_enumerate_tls13_ciphers` (separate API
+    path required by OpenSSL).
 
     TLS ≤1.2 uses two phases:
-      Phase 1 – Parallel acceptance probe: all candidate ciphers are tried
-        concurrently with ThreadPoolExecutor to build the accepted set fast.
-      Phase 2 – Server-order reconstruction: offer the full accepted set;
-        whichever cipher the server negotiates first is its most-preferred.
-        Remove it and repeat until the list is exhausted (or a round fails).
+
+    1. **Parallel acceptance probe** – all candidate ciphers are tried
+       concurrently with :class:`~concurrent.futures.ThreadPoolExecutor` to
+       build the accepted set quickly.
+    2. **Server-order reconstruction** – offer the full accepted set; whichever
+       cipher the server negotiates first is its most-preferred.  Remove it and
+       repeat until the list is exhausted or a round fails.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param tls_min: Minimum TLS version to pin the probe to.
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version to pin the probe to.
+    :type tls_max: ssl.TLSVersion
+    :param max_workers: Maximum parallel threads for phase 1.  Defaults to ``10``.
+    :type max_workers: int
+    :returns: Accepted cipher names in server-preference order.
+    :rtype: list[str]
     """
     if tls_min == ssl.TLSVersion.TLSv1_3:
         return _enumerate_tls13_ciphers(host, port, helo_domain, sni_hostname)
@@ -880,17 +1053,35 @@ def _detect_server_cipher_order(
     tls_min: ssl.TLSVersion,
     tls_max: ssl.TLSVersion,
 ) -> bool | None:
-    """Return True if the server enforces its own cipher-preference order.
+    """Return ``True`` if the server enforces its own cipher-preference order.
 
     Technique: offer the top two accepted ciphers in both orderings (A:B and
-    B:A) and check whether the server always picks the same cipher.  If so,
+    B:A) and check whether the server always selects the same cipher.  If so
     the server has a fixed preference; if not, it mirrors the client order.
 
-    TLS 1.3: RFC 8446 §4.2.9 mandates that servers enforce their own
-    ciphersuite preference, so we return True unconditionally without probing
-    (set_ciphers() rejects TLS 1.3 names anyway).
+    TLS 1.3: RFC 8446 §4.2.9 mandates server-enforced ordering, so ``True``
+    is returned unconditionally without probing (``set_ciphers()`` rejects
+    TLS 1.3 names anyway).
 
-    Returns None when fewer than two ciphers are available to compare.
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param accepted: Ordered list of accepted cipher names from the initial
+        enumeration; at least two are required.
+    :type accepted: list[str]
+    :param tls_min: Minimum TLS version pin.
+    :type tls_min: ssl.TLSVersion
+    :param tls_max: Maximum TLS version pin.
+    :type tls_max: ssl.TLSVersion
+    :returns: ``True`` if server enforces order, ``False`` if it follows the
+        client, ``None`` if the result could not be determined (fewer than
+        two accepted ciphers).
+    :rtype: bool or None
     """
     if tls_min == ssl.TLSVersion.TLSv1_3:
         return True
@@ -902,6 +1093,15 @@ def _detect_server_cipher_order(
     is_legacy = tls_min in _LEGACY_TLS_VERSIONS
 
     def _pick(first: str, second: str) -> str | None:
+        """Offer *first*:*second* to the server and return the cipher it selects.
+
+        :param first: Cipher name to offer first (client preference).
+        :type first: str
+        :param second: Cipher name to offer second.
+        :type second: str
+        :returns: The cipher name the server negotiated, or ``None`` on failure.
+        :rtype: str or None
+        """
         cipher_list = f"{first}:{second}"
         if is_legacy:
             cipher_list += ":@SECLEVEL=0"
@@ -917,18 +1117,21 @@ def _detect_server_cipher_order(
 
     if pick_ab is None or pick_ba is None:
         return None
-    return (
-        pick_ab == pick_ba
-    )  # same winner regardless of client order → server enforces
+    return pick_ab == pick_ba  # same winner regardless of client order → enforced
 
 
 # ---------------------------------------------------------------------------
 # Version map: label → (TLSVersion min, TLSVersion max)
-# Built once at import time and shared by _check_cipher / _check_cipher_order.
+# Built once at import time; shared by _check_cipher and _check_cipher_order.
 # ---------------------------------------------------------------------------
 
 
 def _build_version_map() -> dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]]:
+    """Build the label-to-version-range map for all supported TLS versions.
+
+    :returns: Mapping of TLS version label to ``(min, max)`` version tuple.
+    :rtype: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]]
+    """
     m: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = {
         "TLSv1.3": (ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
         "TLSv1.2": (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
@@ -956,11 +1159,26 @@ def _check_cipher(
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
-    """Enumerate accepted ciphers per TLS version and emit a graded CheckResult each.
+    """Enumerate accepted ciphers per TLS version and emit a graded result for each.
 
-    Per-version ordered lists are stored on *details.offered_ciphers_by_version*
-    (a dynamic attribute) so that _check_cipher_order can reuse them without
-    making a second round of network probes.
+    Per-version ordered lists are stored on the dynamic attribute
+    ``details.offered_ciphers_by_version`` so that :func:`_check_cipher_order`
+    can reuse them without making a second round of network probes.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param details: TLS details object; ``offered_ciphers_by_version`` and
+        ``offered_ciphers`` are populated as a side-effect.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which per-version
+        :class:`~mailcheck.models.CheckResult` items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     details.offered_ciphers_by_version: dict[str, list[str]] = {}  # type: ignore[attr-defined]
 
@@ -1017,7 +1235,22 @@ def _check_cipher_order(
 ) -> None:
     """Check server cipher-preference enforcement and prescribed ordering per version.
 
-    Must be called after _check_cipher so that offered_ciphers_by_version is populated.
+    Must be called after :func:`_check_cipher` so that
+    ``details.offered_ciphers_by_version`` is populated.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param details: TLS details object; reads ``offered_ciphers_by_version``.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which per-version
+        :class:`~mailcheck.models.CheckResult` items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     by_version: dict[str, list[str]] = getattr(
         details, "offered_ciphers_by_version", {}
@@ -1045,7 +1278,7 @@ def _check_cipher_order(
             ver_label, (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2)
         )
 
-        # --- Server-preference enforcement ---
+        # Server-preference enforcement
         enforced = _detect_server_cipher_order(
             host, port, helo_domain, sni_hostname, ciphers, tls_min, tls_max
         )
@@ -1077,7 +1310,7 @@ def _check_cipher_order(
                 )
             )
 
-        # --- Prescribed ordering: Good → Sufficient → Phase-out ---
+        # Prescribed ordering: Good → Sufficient → Phase-out
         categories = [_classify_cipher(c) for c in ciphers]
         ranks = [order_rank.get(s, 3) for s in categories]
 
@@ -1123,14 +1356,22 @@ def _check_cipher_order(
 def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
     """Assess the key exchange mechanism used in the negotiated TLS session.
 
-    TLS 1.3: ephemeral ECDHE is mandatory (RFC 8446 §4.2.7).  Python ssl does
-    not expose the negotiated NamedGroup on most builds; we report GOOD and
-    note the limitation when the group name is unavailable.
+    **TLS 1.3**: ephemeral ECDHE is mandatory (RFC 8446 §4.2.7).  Python ssl
+    does not expose the negotiated ``NamedGroup`` on most builds; when the
+    group name is unavailable the check reports ``GOOD`` with an informational
+    note.
 
-    TLS ≤1.2: mechanism is inferred from the cipher name prefix:
-      ECDHE-*  → EC Diffie-Hellman; classify the named curve
-      DHE-*    → finite-field DH; assess by key size
-      other    → static RSA key exchange (no forward secrecy; phase-out)
+    **TLS ≤1.2**: the mechanism is inferred from the cipher name prefix:
+
+    - ``ECDHE-*`` → EC Diffie-Hellman; the named curve is classified.
+    - ``DHE-*``   → finite-field DH; assessed by key size in bits.
+    - other       → static RSA key exchange (no forward secrecy; phase-out).
+
+    :param details: TLS details object containing session metadata.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which :class:`~mailcheck.models.CheckResult`
+        items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     tls_ver = details.tls_version
     cipher = details.cipher_name
@@ -1169,7 +1410,7 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
             )
         return
 
-    # TLS ≤1.2 – derive mechanism from cipher name
+    # TLS ≤1.2 – derive mechanism from cipher name prefix
     if "ECDHE" in cipher:
         curve = details.dh_group or ""  # NOTE: cert pubkey curve ≠ kex curve
         st = _classify_ec_curve(curve)
@@ -1243,8 +1484,16 @@ _SHA_PHASE_OUT = {"sha1", "sha", "md5"}
 def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None:
     """Report the hash algorithm used to sign the key-exchange parameters.
 
-    TLS 1.3 always uses HKDF with SHA-256 or SHA-384; no inspection is needed.
-    For TLS ≤1.2 the hash is the last token of the cipher name (e.g. -SHA256).
+    TLS 1.3 always uses HKDF with SHA-256 or SHA-384; no per-cipher
+    inspection is needed.  For TLS ≤1.2 the hash is the last hyphen-delimited
+    token of the cipher name (e.g. ``ECDHE-RSA-AES256-GCM-SHA384``).
+
+    :param details: TLS details object; reads ``tls_version`` and
+        ``cipher_name``.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which a :class:`~mailcheck.models.CheckResult`
+        is appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     if details.tls_version == "TLSv1.3":
         checks.append(
@@ -1265,9 +1514,7 @@ def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None
     if found and found.lower() in _SHA_GOOD:
         checks.append(
             CheckResult(
-                name="Hash Function (Key Exchange)",
-                status=Status.GOOD,
-                value=found,
+                name="Hash Function (Key Exchange)", status=Status.GOOD, value=found
             )
         )
     elif found:
@@ -1297,7 +1544,14 @@ def _check_hash_function(details: TLSDetails, checks: list[CheckResult]) -> None
 
 
 def _check_compression(details: TLSDetails, checks: list[CheckResult]) -> None:
-    """Flag TLS-layer compression, which enables the CRIME attack (CVE-2012-4929)."""
+    """Flag TLS-layer compression, which enables the CRIME attack (CVE-2012-4929).
+
+    :param details: TLS details object; reads ``compression``.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which a :class:`~mailcheck.models.CheckResult`
+        is appended.
+    :type checks: list[~mailcheck.models.CheckResult]
+    """
     comp = details.compression
     if not comp:
         checks.append(
@@ -1343,13 +1597,20 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
     TLS 1.3 eliminates renegotiation entirely (replaced by Key Update); both
     sub-checks are reported as N/A.
 
-    For TLS ≤1.2, we infer secure-renegotiation support from the tls-unique
-    channel binding: if it is non-null, the Renegotiation Info extension (RI)
-    was negotiated, satisfying RFC 5746.
+    For TLS ≤1.2, secure-renegotiation support is inferred from the
+    ``tls-unique`` channel binding: a non-null value implies the
+    Renegotiation Info extension (RI) was exchanged, satisfying RFC 5746.
 
     Client-initiated renegotiation cannot be actively probed in pure Python
-    (it would require sending a ClientHello mid-session); it is flagged for
-    manual verification instead.
+    (it would require sending a ``ClientHello`` mid-session); it is flagged
+    for manual verification instead.
+
+    :param details: TLS details object; reads ``tls_version`` and
+        ``secure_renegotiation``.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which :class:`~mailcheck.models.CheckResult`
+        items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     if details.tls_version == "TLSv1.3":
         checks.append(
@@ -1410,9 +1671,21 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
 
 
 def _check_certificate(
-    details: TLSDetails, checks: list[CheckResult], host: str
+    details: TLSDetails,
+    checks: list[CheckResult],
+    host: str,
 ) -> None:
-    """Report trust chain, public key, signature algorithm, domain match, and expiry."""
+    """Report trust chain, public key, signature algorithm, domain match, and expiry.
+
+    :param details: TLS details object containing parsed certificate metadata.
+    :type details: ~mailcheck.models.TLSDetails
+    :param checks: List to which :class:`~mailcheck.models.CheckResult`
+        items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
+    :param host: Hostname used in the SMTP connection; checked against the
+        certificate SAN/CN.
+    :type host: str
+    """
     if not details.cert_subject:
         checks.append(
             CheckResult(
@@ -1424,11 +1697,11 @@ def _check_certificate(
         return
 
     # Trust chain
-    # cert_trusted=True   → chain verified against system trust store
-    # cert_trusted=False  → chain broken or self-signed (SSLCertVerificationError)
-    # cert_trusted=None   → could not verify (bare IP, or connection failed)
+    # cert_trusted=True  → chain verified against system trust store
+    # cert_trusted=False → chain broken or self-signed (SSLCertVerificationError)
+    # cert_trusted=None  → could not verify (bare IP or connection failure)
     if details.cert_trusted is True:
-        trust_status, trust_value, trust_detail = (Status.GOOD, "Trusted", [])
+        trust_status, trust_value, trust_detail = Status.GOOD, "Trusted", []
     elif details.cert_trusted is False:
         trust_status = Status.WARNING
         trust_value = "Untrusted / self-signed"
@@ -1593,11 +1866,18 @@ def _check_certificate(
 
 
 def _check_caa(host: str, checks: list[CheckResult]) -> None:
-    """Look up CAA records, walking up the DNS hierarchy from the MX hostname.
+    """Look up CAA records, walking up the DNS hierarchy from *host*.
 
-    RFC 8659 requires at least one 'issue' or 'issuewild' tag.  A plain-HTTP
-    iodef URL is flagged because incident reports sent over HTTP can be
+    RFC 8659 requires at least one ``issue`` or ``issuewild`` tag to
+    restrict which CAs may issue certificates for the domain.  A plain-HTTP
+    ``iodef`` URL is flagged because incident reports sent over HTTP can be
     intercepted or tampered with.
+
+    :param host: MX hostname to start the DNS hierarchy walk from.
+    :type host: str
+    :param checks: List to which a :class:`~mailcheck.models.CheckResult`
+        is appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     labels = host.rstrip(".").split(".")
     caa_records: list[str] = []
@@ -1656,12 +1936,16 @@ def _check_caa(host: str, checks: list[CheckResult]) -> None:
 def _tlsa_fingerprint(der: bytes, selector: int, matching: int) -> str | None:
     """Compute a TLSA record fingerprint from a DER-encoded certificate.
 
-    Selector  0 = full certificate DER
-              1 = SubjectPublicKeyInfo DER (SPKI)
-    Matching  0 = exact match (raw hex)
-              1 = SHA-256
-              2 = SHA-512
-    Returns None for unsupported selector/matching combinations or parse errors.
+    :param der: DER-encoded certificate bytes.
+    :type der: bytes
+    :param selector: ``0`` = full certificate DER;
+        ``1`` = SubjectPublicKeyInfo (SPKI) DER.
+    :type selector: int
+    :param matching: ``0`` = exact hex match; ``1`` = SHA-256; ``2`` = SHA-512.
+    :type matching: int
+    :returns: Lowercase hex fingerprint string, or ``None`` for unsupported
+        selector/matching combinations or parse errors.
+    :rtype: str or None
     """
     try:
         if selector == 0:
@@ -1694,8 +1978,13 @@ def _tlsa_fingerprint(der: bytes, selector: int, matching: int) -> str | None:
 def _verify_tlsa_record(record_str: str, cert_der: bytes) -> tuple[bool, str]:
     """Compare one TLSA record against the server certificate.
 
-    record_str is the raw DNS value, e.g. "3 1 1 abcdef...".
-    Returns (matches, human-readable description).
+    :param record_str: Raw DNS TLSA value, e.g. ``"3 1 1 abcdef…"``.
+    :type record_str: str
+    :param cert_der: DER-encoded server certificate bytes.
+    :type cert_der: bytes
+    :returns: Tuple ``(matches, description)`` where *matches* is ``True``
+        when the record fingerprint matches the certificate.
+    :rtype: tuple[bool, str]
     """
     parts = record_str.split()
     if len(parts) < 4:
@@ -1733,8 +2022,19 @@ def _fetch_cert_der(
 ) -> bytes | None:
     """Open a fresh STARTTLS connection and return the raw DER certificate.
 
-    Used as a fallback when _probe_tls did not store the DER (e.g. STARTTLS
-    was not advertised during the main probe but became available later).
+    Used as a fallback when :func:`_probe_tls` did not store the DER (e.g.
+    STARTTLS was not advertised during the main probe).
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :returns: Raw DER bytes, or ``None`` on any failure.
+    :rtype: bytes or None
     """
     try:
         smtp, _, _ = _connect_plain(host, port)
@@ -1766,15 +2066,31 @@ def _check_dane(
     """Look up TLSA records and verify them against the live server certificate.
 
     DANE usages for MX servers (RFC 7672):
-      2 = DANE-TA  – trust anchor; certificate must chain to this record
-      3 = DANE-EE  – end entity; certificate must match this record exactly
 
-    Usages 0 (PKIX-TA) and 1 (PKIX-EE) are PKIX-constrained and rarely used
-    for MX; we flag them as warnings rather than errors.
+    - Usage 2 (``DANE-TA``) – trust anchor; certificate must chain to this record.
+    - Usage 3 (``DANE-EE``) – end entity; certificate must match this record exactly.
 
-    Rollover: DANE allows multiple TLSA records so that the next certificate
-    can be pre-published before the current one expires.  Non-matching records
-    during a valid rollover are expected and correct.
+    Usages 0 (``PKIX-TA``) and 1 (``PKIX-EE``) are PKIX-constrained; they are
+    flagged as warnings rather than errors.
+
+    DANE allows multiple TLSA records so that the next certificate can be
+    pre-published before the current one expires.  Non-matching records during
+    a valid rollover are expected and noted as informational.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port (used to form the TLSA owner name ``_<port>._tcp.<host>``).
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :param cert_der: DER-encoded certificate stashed by :func:`_probe_tls`,
+        or ``None`` to trigger a fresh fetch.
+    :type cert_der: bytes or None
+    :param checks: List to which :class:`~mailcheck.models.CheckResult`
+        items are appended.
+    :type checks: list[~mailcheck.models.CheckResult]
     """
     tlsa_name = f"_{port}._tcp.{host}"
     records = resolve(tlsa_name, "TLSA")
@@ -1879,10 +2195,7 @@ def _check_dane(
             )
     else:
         note, status = (
-            (
-                "Only one TLSA record present. "
-                "Add a second record (next cert or issuer CA) for a safe rollover."
-            ),
+            "Only one TLSA record present. Add a second record (next cert or issuer CA) for a safe rollover.",
             Status.WARNING,
         )
 
@@ -1897,11 +2210,18 @@ def _check_dane(
 
 
 def _test_open_relay(smtp: smtplib.SMTP, helo_domain: str) -> bool:
-    """Return True if the server relays mail for two unrelated external addresses.
+    """Return ``True`` if the server relays mail for two unrelated external addresses.
 
-    We issue MAIL FROM and RCPT TO for addresses at distinct example domains.
-    If both are accepted (SMTP 250), the server is an open relay.  We always
-    send RSET to avoid leaving a partial transaction queued on the server.
+    Issues ``MAIL FROM`` and ``RCPT TO`` for addresses at distinct
+    ``*.example`` domains.  If both return SMTP 250 the server is an open
+    relay.  ``RSET`` is always sent to avoid leaving a partial transaction
+    queued on the server.
+
+    :param smtp: Active :class:`smtplib.SMTP` connection.
+    :type smtp: smtplib.SMTP
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :rtype: bool
     """
     try:
         smtp.ehlo(helo_domain)
@@ -1928,16 +2248,27 @@ def check_smtp(
     port: int = 25,
     helo_domain: str = "mailcheck.local",
 ) -> SMTPDiagResult:
-    """Run all SMTP diagnostics for *host*:*port* and return a populated result."""
+    """Run all SMTP diagnostics for *host*:*port* and return a populated result.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: TCP port to probe.  Defaults to ``25``.
+    :type port: int
+    :param helo_domain: Domain name sent in the EHLO greeting.
+        Defaults to ``"mailcheck.local"``.
+    :type helo_domain: str
+    :returns: A fully populated :class:`~mailcheck.models.SMTPDiagResult`.
+    :rtype: ~mailcheck.models.SMTPDiagResult
+    """
     result = SMTPDiagResult(host=host, port=port)
 
-    # Resolve to IP for PTR lookup (failure is non-fatal; we use the host string as fallback)
+    # Resolve to IP for PTR lookup (non-fatal; fall back to host string)
     try:
         ip = socket.gethostbyname(host)
     except socket.gaierror:
         ip = host
 
-    # --- Connect ---
+    # Connect
     try:
         smtp, connect_ms, banner = _connect_plain(host, port)
     except (OSError, smtplib.SMTPException) as exc:
@@ -1961,7 +2292,7 @@ def check_smtp(
         )
     )
 
-    # --- Reverse DNS (PTR) ---
+    # Reverse DNS (PTR)
     ptr = reverse_lookup(ip)
     result.reverse_dns = ptr
     result.checks.append(
@@ -1979,7 +2310,7 @@ def check_smtp(
         )
     )
 
-    # --- EHLO + STARTTLS advertisement ---
+    # EHLO + STARTTLS advertisement
     try:
         smtp.ehlo(helo_domain)
         has_starttls = smtp.has_extn("STARTTLS")
@@ -2001,7 +2332,7 @@ def check_smtp(
         )
     )
 
-    # --- Open relay ---
+    # Open relay
     open_relay = _test_open_relay(smtp, helo_domain)
     result.open_relay = open_relay
     result.checks.append(
@@ -2023,7 +2354,7 @@ def check_smtp(
     except smtplib.SMTPException:
         pass
 
-    # --- Deep TLS inspection (separate connection) ---
+    # Deep TLS inspection (separate connection)
     sni_hostname: str | None = None
     if has_starttls:
         tls_details, tls_err, sni_hostname = _probe_tls(host, port, helo_domain)
@@ -2037,7 +2368,7 @@ def check_smtp(
             )
         else:
             result.tls = tls_details
-            assert tls_details is not None  # narrow type for checker
+            assert tls_details is not None  # narrow type for static checker
             _check_tls_version(
                 host, port, helo_domain, sni_hostname, tls_details, result.checks
             )
@@ -2053,11 +2384,10 @@ def check_smtp(
             _check_renegotiation(tls_details, result.checks)
             _check_certificate(tls_details, result.checks, host)
 
-    # --- CAA ---
+    # CAA
     _check_caa(host, result.checks)
 
-    # --- DANE ---
-    # Reuse the DER stashed by _probe_tls to avoid an extra connection.
+    # DANE – reuse the DER stashed by _probe_tls to avoid an extra connection.
     cert_der = (
         result.tls._cert_der  # type: ignore[attr-defined]
         if result.tls and hasattr(result.tls, "_cert_der")
