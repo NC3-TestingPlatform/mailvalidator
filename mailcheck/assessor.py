@@ -41,8 +41,6 @@ def assess(
     ----------
     domain:
         Target domain name.
-    bimi_selector:
-        BIMI selector to query (default ``"default"``).
     smtp_port:
         SMTP port to probe (default ``25``).
     run_blacklist:
