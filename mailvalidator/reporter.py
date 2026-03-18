@@ -197,7 +197,7 @@ def print_full_report(report: FullReport) -> None:
     in :func:`~mailvalidator.assessor.assess`.  Sections whose result is ``None``
     are silently skipped.
     """
-    console.rule(f"[bold cyan]Mail Server Report: {report.domain}[/bold cyan]")
+    console.rule(f"[bold cyan]Mail Validator Report: {report.domain}[/bold cyan]")
 
     if report.mx:
         print_mx(report.mx)
