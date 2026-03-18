@@ -324,5 +324,5 @@ def cmd_blacklist(
     print_blacklist(check_blacklist(ip, max_workers=workers))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     app()
