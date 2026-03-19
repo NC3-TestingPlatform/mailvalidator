@@ -35,21 +35,21 @@ $ mailvalidator check example.com
 
 ## Features
 
-| Check | Command | What is verified |
-|---|---|---|
-| **MX Records** | `mailvalidator mx` | Authoritative NS query, priority ordering, duplicate detection |
-| **SMTP Diagnostics** | `mailvalidator smtp` | TCP connect latency, banner, PTR record, open relay, STARTTLS |
-| **TLS Inspection** | *(part of smtp)* | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry |
-| **SPF** | `mailvalidator spf` | Record lookup, all-qualifier grading, recursive include/redirect resolution, RFC 7208 lookup-count limit |
-| **DMARC** | `mailvalidator dmarc` | Policy grading (none/quarantine/reject), pct, sp, rua, ruf, adkim/aspf alignment |
-| **DKIM** | `mailvalidator dkim` | Base-node (`_domainkey.<domain>`) RFC 2308 existence check |
-| **BIMI** | `mailvalidator bimi` | Record lookup, logo URL (HTTPS + SVG), VMC authority evidence |
-| **TLSRPT** | `mailvalidator tlsrpt` | RFC 8460 record lookup, rua scheme validation (mailto/HTTPS) |
-| **MTA-STS** | `mailvalidator mta-sts` | DNS record + HTTPS policy file fetch, mode, max_age, MX entries |
-| **CAA** | *(part of smtp)* | RFC 8659 hierarchy walk, issue/issuewild tags, iodef HTTPS enforcement |
-| **DANE / TLSA** | *(part of smtp)* | TLSA existence, SHA-256/SHA-512 fingerprint match, rollover scheme |
-| **Blacklist** | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant |
-| **Full Report** | `mailvalidator check` | All of the above in one command |
+| Check                | Command                   | What is verified                                                                                                                                                                                                 |
+| -------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection                                                                                                                                                   |
+| **SMTP Diagnostics** | `mailvalidator smtp`      | TCP connect latency, banner, PTR record, open relay, STARTTLS                                                                                                                                                    |
+| **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry |
+| **SPF**              | `mailvalidator spf`       | Record lookup, all-qualifier grading, recursive include/redirect resolution, RFC 7208 lookup-count limit                                                                                                         |
+| **DMARC**            | `mailvalidator dmarc`     | Policy grading (none/quarantine/reject), pct, sp, rua, ruf, adkim/aspf alignment                                                                                                                                 |
+| **DKIM**             | `mailvalidator dkim`      | Base-node (`_domainkey.<domain>`) RFC 2308 existence check                                                                                                                                                       |
+| **BIMI**             | `mailvalidator bimi`      | Record lookup, logo URL (HTTPS + SVG), VMC authority evidence                                                                                                                                                    |
+| **TLSRPT**           | `mailvalidator tlsrpt`    | RFC 8460 record lookup, rua scheme validation (mailto/HTTPS)                                                                                                                                                     |
+| **MTA-STS**          | `mailvalidator mta-sts`   | DNS record + HTTPS policy file fetch, mode, max_age, MX entries                                                                                                                                                  |
+| **CAA**              | _(part of smtp)_          | RFC 8659 hierarchy walk, issue/issuewild tags, iodef HTTPS enforcement                                                                                                                                           |
+| **DANE / TLSA**      | _(part of smtp)_          | TLSA existence, SHA-256/SHA-512 fingerprint match, rollover scheme                                                                                                                                               |
+| **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                             |
+| **Full Report**      | `mailvalidator check`     | All of the above in one command                                                                                                                                                                                  |
 
 ---
 
@@ -185,12 +185,12 @@ for check in result.checks:
 TLS checks follow the
 [NCSC-NL IT Security Guidelines for Transport Layer Security (TLS)](https://www.ncsc.nl/en/transport-layer-security-tls/security-guidelines-for-transport-layer-security-2025-05).
 
-| Grade | Criteria | Examples |
-|---|---|---|
-| **Good** | Forward-secret AEAD cipher + strong key exchange | All TLS 1.3 suites, `ECDHE-RSA-AES256-GCM-SHA384` |
-| **Sufficient** | Forward-secret but CBC mode or DHE overhead | `ECDHE-RSA-AES256-SHA384`, `DHE-RSA-AES256-GCM-SHA384` |
-| **Phase-out** | No forward secrecy or weak block cipher | RSA key exchange ciphers, 3DES (Sweet32) |
-| **Insufficient** | Broken or unsafe | NULL, anonymous, export, RC4 |
+| Grade            | Criteria                                         | Examples                                               |
+| ---------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| **Good**         | Forward-secret AEAD cipher + strong key exchange | All TLS 1.3 suites, `ECDHE-RSA-AES256-GCM-SHA384`      |
+| **Sufficient**   | Forward-secret but CBC mode or DHE overhead      | `ECDHE-RSA-AES256-SHA384`, `DHE-RSA-AES256-GCM-SHA384` |
+| **Phase-out**    | No forward secrecy or weak block cipher          | RSA key exchange ciphers, 3DES (Sweet32)               |
+| **Insufficient** | Broken or unsafe                                 | NULL, anonymous, export, RC4                           |
 
 **TLS versions:** TLS 1.3 → OK · TLS 1.2 → Sufficient · TLS 1.1/1.0 → Phase-out.
 
@@ -258,7 +258,9 @@ mailvalidator/
 │       ├── test_tlsrpt.py
 │       ├── test_mta_sts.py
 │       └── test_blacklist.py
+├── requirements-dev.txt
 ├── requirements.txt
+├── LICENSE
 └── pyproject.toml
 ```
 
