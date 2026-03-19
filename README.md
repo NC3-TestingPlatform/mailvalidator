@@ -15,6 +15,7 @@ $ mailvalidator check example.com
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
 ![Tests](https://img.shields.io/badge/tests-291%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
+![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
 ---
 
@@ -283,3 +284,9 @@ testable code. SMTP network I/O functions (`_probe_tls`, `check_smtp`, etc.)
 require a live mail server and are excluded from unit tests via
 `# pragma: no cover`; integration tests against a real server are out of
 scope for the unit suite.
+
+---
+
+## License
+
+GPLv3 — see [LICENSE](LICENSE) for details.
