@@ -1,5 +1,6 @@
+aiohttp
+cryptography
 dnspython
 rich
 typer
-aiohttp
-cryptography
+vendor/chainvalidator
