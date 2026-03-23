@@ -38,6 +38,7 @@ $ mailvalidator check example.com
 | Check                | Command                   | What is verified                                                                                                                                                                                                 |
 | -------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection                                                                                                                                                   |
+| **DNSSEC**           | `mailvalidator dnssec`    | Chain-of-trust validation (Trust Anchor → `.` → TLD → domain) for the email address domain and each MX host domain; CNAME chain following; DANE prerequisite annotation (RFC 7671)                               |
 | **SMTP Diagnostics** | `mailvalidator smtp`      | TCP connect latency, banner, PTR record, open relay, STARTTLS                                                                                                                                                    |
 | **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry |
 | **SPF**              | `mailvalidator spf`       | Record lookup, all-qualifier grading, recursive include/redirect resolution, RFC 7208 lookup-count limit                                                                                                         |
@@ -48,7 +49,7 @@ $ mailvalidator check example.com
 | **MTA-STS**          | `mailvalidator mta-sts`   | DNS record + HTTPS policy file fetch, mode, max_age, MX entries                                                                                                                                                  |
 | **CAA**              | _(part of smtp)_          | RFC 8659 hierarchy walk, issue/issuewild tags, iodef HTTPS enforcement                                                                                                                                           |
 | **DANE / TLSA**      | _(part of smtp)_          | TLSA existence, SHA-256/SHA-512 fingerprint match, rollover scheme                                                                                                                                               |
-| **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                             |
+| **Blacklist**        | `mailvalidator blacklist` | 101 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                             |
 | **Full Report**      | `mailvalidator check`     | All of the above in one command                                                                                                                                                                                  |
 
 ---
@@ -60,6 +61,7 @@ $ mailvalidator check example.com
 - [`rich`](https://github.com/Textualize/rich) ≥ 13.7
 - [`typer`](https://typer.tiangolo.com/) ≥ 0.12
 - [`cryptography`](https://cryptography.io/) ≥ 42
+- [`chainvalidator`](https://github.com/t0kubetsu/chainvalidator) (local dependency — see installation)
 
 ---
 
@@ -68,7 +70,7 @@ $ mailvalidator check example.com
 **From source:**
 
 ```bash
-git clone https://github.com/t0kubetsu/mailvalidator
+git clone --recurse-submodules https://github.com/t0kubetsu/mailvalidator.git
 cd mailvalidator
 python -m venv .venv
 source .venv/bin/activate
@@ -96,6 +98,9 @@ mailvalidator check example.com
 # Skip SMTP and blacklist (faster, no outbound TCP port 25 needed)
 mailvalidator check example.com --no-smtp --no-blacklist
 
+# Skip DNSSEC chain-of-trust validation
+mailvalidator check example.com --no-dnssec
+
 # Non-standard SMTP port
 mailvalidator check example.com --smtp-port 587
 ```
@@ -104,6 +109,7 @@ mailvalidator check example.com --smtp-port 587
 
 ```bash
 mailvalidator mx        example.com
+mailvalidator dnssec    example.com
 mailvalidator spf       example.com
 mailvalidator dmarc     example.com
 mailvalidator dkim      example.com
@@ -135,6 +141,7 @@ report = assess(
     smtp_port=25,
     run_smtp=True,
     run_blacklist=True,
+    run_dnssec=True,
     progress_cb=print,   # optional: called with a status string before each step
 )
 
@@ -153,12 +160,15 @@ from mailvalidator.checks.mta_sts   import check_mta_sts
 from mailvalidator.checks.mx        import check_mx
 from mailvalidator.checks.blacklist import check_blacklist
 from mailvalidator.checks.smtp      import check_smtp
+from mailvalidator.checks.dnssec    import check_dnssec_domain, check_dnssec_mx
 
-spf   = check_spf("example.com")
-dmarc = check_dmarc("example.com")
-mx    = check_mx("example.com")
-smtp  = check_smtp("mail.example.com", port=25)
-bl    = check_blacklist("203.0.113.42")
+spf    = check_spf("example.com")
+dmarc  = check_dmarc("example.com")
+mx     = check_mx("example.com")
+dnssec = check_dnssec_domain("example.com")
+mx_sec = check_dnssec_mx([r.exchange for r in mx.records], email_domain="example.com")
+smtp   = check_smtp("mail.example.com", port=25)
+bl     = check_blacklist("203.0.113.42")
 ```
 
 ### Working with results
@@ -233,6 +243,7 @@ mailvalidator/
 │   ├── cli.py             Typer CLI entry point
 │   └── checks/
 │       ├── mx.py
+│       ├── dnssec.py      DNSSEC chain-of-trust checks (requires chainvalidator)
 │       ├── smtp.py        SMTP diagnostics + deep TLS inspection
 │       ├── spf.py
 │       ├── dmarc.py
@@ -250,6 +261,7 @@ mailvalidator/
 │   ├── test_cli.py
 │   └── checks/
 │       ├── test_mx.py
+│       ├── test_dnssec.py
 │       ├── test_smtp.py
 │       ├── test_spf.py
 │       ├── test_dmarc.py
@@ -258,9 +270,7 @@ mailvalidator/
 │       ├── test_tlsrpt.py
 │       ├── test_mta_sts.py
 │       └── test_blacklist.py
-├── requirements-dev.txt
 ├── requirements.txt
-├── LICENSE
 └── pyproject.toml
 ```
 
@@ -281,11 +291,20 @@ pytest tests/checks/test_smtp.py
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **340 tests** and achieves **100% coverage** of all
+The test suite has **291 tests** and achieves **100% coverage** of all
 testable code. SMTP network I/O functions (`_probe_tls`, `check_smtp`, etc.)
 require a live mail server and are excluded from unit tests via
 `# pragma: no cover`; integration tests against a real server are out of
 scope for the unit suite.
+
+---
+
+## Contributing
+
+1. Fork the repository and create a feature branch.
+2. Add or update tests — the project targets 100% unit test coverage.
+3. Run `pytest tests/` and confirm all tests pass before opening a pull request.
+4. Follow the existing docstring format (reStructuredText / docutils field lists).
 
 ---
 
