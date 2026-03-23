@@ -11,6 +11,7 @@ from mailvalidator.models import (
     CheckResult,
     DKIMResult,
     DMARCResult,
+    DNSSECResult,
     FullReport,
     MTASTSResult,
     MXRecord,
@@ -27,6 +28,8 @@ from mailvalidator.reporter import (
     print_blacklist,
     print_dkim,
     print_dmarc,
+    print_dnssec_domain,
+    print_dnssec_mx,
     print_full_report,
     print_mta_sts,
     print_mx,
@@ -211,8 +214,69 @@ class TestPrintBlacklist:
         assert "5.6.7.8" in buf.getvalue()
 
 
+class TestPrintDnssecDomain:
+    def test_prints_domain(self):
+        r = DNSSECResult(domain="example.com")
+        r.checks = [
+            CheckResult(
+                name="DNSSEC (example.com)", status=Status.OK, value="signed — secure"
+            )
+        ]
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_dnssec_domain(r)
+        assert "example.com" in buf.getvalue()
+
+    def test_prints_check_value(self):
+        r = DNSSECResult(domain="example.com")
+        r.checks = [
+            CheckResult(
+                name="DNSSEC (example.com)", status=Status.NOT_FOUND, value="unsigned"
+            )
+        ]
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_dnssec_domain(r)
+        assert "unsigned" in buf.getvalue()
+
+
+class TestPrintDnssecMx:
+    def test_prints_domain(self):
+        r = DNSSECResult(domain="example.com")
+        r.checks = [
+            CheckResult(
+                name="DNSSEC (mx1.example.com)",
+                status=Status.OK,
+                value="signed — secure",
+            )
+        ]
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_dnssec_mx(r)
+        assert "example.com" in buf.getvalue()
+
+    def test_prints_check_for_each_mx(self):
+        r = DNSSECResult(domain="example.com")
+        r.checks = [
+            CheckResult(
+                name="DNSSEC (mx1.example.com)",
+                status=Status.OK,
+                value="signed — secure",
+            ),
+            CheckResult(
+                name="DNSSEC (mx2.example.com)", status=Status.ERROR, value="bogus"
+            ),
+        ]
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_dnssec_mx(r)
+        out = buf.getvalue()
+        assert "mx1.example.com" in out
+        assert "mx2.example.com" in out
+
+
 class TestPrintFullReport:
-    def _report(self, smtp=False, blacklist=False):
+    def _report(self, smtp=False, blacklist=False, dnssec=False):
         r = FullReport(domain="example.com")
         for attr, cls in [
             ("mx", MXResult),
@@ -238,6 +302,23 @@ class TestPrintFullReport:
             b.listed_on = []
             b.checks = []
             r.blacklist = b
+        if dnssec:
+            r.dnssec_domain = DNSSECResult(domain="example.com")
+            r.dnssec_domain.checks = [
+                CheckResult(
+                    name="DNSSEC (example.com)",
+                    status=Status.OK,
+                    value="signed — secure",
+                )
+            ]
+            r.dnssec_mx = DNSSECResult(domain="example.com")
+            r.dnssec_mx.checks = [
+                CheckResult(
+                    name="DNSSEC (mx1.example.com)",
+                    status=Status.OK,
+                    value="signed — secure",
+                )
+            ]
         return r
 
     def test_domain_in_output(self):
@@ -252,6 +333,12 @@ class TestPrintFullReport:
             print_full_report(self._report(smtp=True, blacklist=True))
         assert "mail.example.com" in buf.getvalue()
         assert "1.2.3.4" in buf.getvalue()
+
+    def test_with_dnssec_sections(self):
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_full_report(self._report(dnssec=True))
+        assert "DNSSEC" in buf.getvalue()
 
     def test_empty_report_no_crash(self):
         r = FullReport(domain="empty.example.com")

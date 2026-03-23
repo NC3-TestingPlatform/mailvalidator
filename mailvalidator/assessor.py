@@ -12,10 +12,11 @@ from __future__ import annotations
 import socket
 from typing import Callable
 
-from mailvalidator.checks.blacklist import check_blacklist
 from mailvalidator.checks.bimi import check_bimi
+from mailvalidator.checks.blacklist import check_blacklist
 from mailvalidator.checks.dkim import check_dkim
 from mailvalidator.checks.dmarc import check_dmarc
+from mailvalidator.checks.dnssec import check_dnssec_domain, check_dnssec_mx
 from mailvalidator.checks.mta_sts import check_mta_sts
 from mailvalidator.checks.mx import check_mx
 from mailvalidator.checks.smtp import check_smtp
@@ -45,6 +46,7 @@ def assess(
     smtp_port: int = 25,
     run_blacklist: bool = True,
     run_smtp: bool = True,
+    run_dnssec: bool = True,
     progress_cb: Callable[[str], None] | None = None,
 ) -> FullReport:
     """Run all mail server checks for *domain* and return a :class:`~mailvalidator.models.FullReport`.
@@ -56,6 +58,8 @@ def assess(
         ~30 s on slow networks.
     :param run_smtp: When ``True`` (default), probe each MX server via SMTP
         and STARTTLS.  Requires outbound TCP access to *smtp_port*.
+    :param run_dnssec: When ``True`` (default), validate the DNSSEC chain of
+        trust for the email address domain and each MX server domain.
     :param progress_cb: Optional callable invoked with a short status string
         before each check group.  Useful for driving a progress spinner in
         the CLI.
@@ -72,6 +76,15 @@ def assess(
 
     _cb("Checking MX records…")
     report.mx = check_mx(domain)
+
+    if run_dnssec:
+        _cb("Checking DNSSEC for email domain…")
+        report.dnssec_domain = check_dnssec_domain(domain)
+
+        if report.mx and report.mx.records:
+            mx_domains = [r.exchange for r in report.mx.records]
+            _cb("Checking DNSSEC for MX server domain(s)…")
+            report.dnssec_mx = check_dnssec_mx(mx_domains, email_domain=domain)
 
     _cb("Checking SPF record…")
     report.spf = check_spf(domain)

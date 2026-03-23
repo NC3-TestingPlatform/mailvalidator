@@ -17,8 +17,9 @@ from mailvalidator.models import (
     BIMIResult,
     BlacklistResult,
     CheckResult,
-    DMARCResult,
     DKIMResult,
+    DMARCResult,
+    DNSSECResult,
     FullReport,
     MTASTSResult,
     MXResult,
@@ -190,6 +191,33 @@ def print_mta_sts(result: MTASTSResult) -> None:
     console.print(_checks_table(result.checks))
 
 
+def print_dnssec_domain(result: DNSSECResult) -> None:
+    """Render DNSSEC email-domain check results to the terminal.
+
+    :param result: DNSSEC check result for the email address domain.
+    :type result: ~mailvalidator.models.DNSSECResult
+    """
+    console.print(
+        Panel(f"[bold]DNSSEC – Email Domain[/bold] – {result.domain}", style="blue")
+    )
+    console.print(_checks_table(result.checks))
+
+
+def print_dnssec_mx(result: DNSSECResult) -> None:
+    """Render DNSSEC MX-domain check results to the terminal.
+
+    :param result: DNSSEC check result for the MX server domain(s).
+    :type result: ~mailvalidator.models.DNSSECResult
+    """
+    console.print(
+        Panel(
+            f"[bold]DNSSEC – Mail Server Domain(s)[/bold] – {result.domain}",
+            style="blue",
+        )
+    )
+    console.print(_checks_table(result.checks))
+
+
 def print_full_report(report: FullReport) -> None:
     """Render the complete :class:`~mailvalidator.models.FullReport` to the terminal.
 
@@ -197,10 +225,14 @@ def print_full_report(report: FullReport) -> None:
     in :func:`~mailvalidator.assessor.assess`.  Sections whose result is ``None``
     are silently skipped.
     """
-    console.rule(f"[bold cyan]Mail Validator Report: {report.domain}[/bold cyan]")
+    console.rule(f"[bold cyan]Mail Server Report: {report.domain}[/bold cyan]")
 
     if report.mx:
         print_mx(report.mx)
+    if report.dnssec_domain:
+        print_dnssec_domain(report.dnssec_domain)
+    if report.dnssec_mx:
+        print_dnssec_mx(report.dnssec_mx)
     if report.smtp:
         print_smtp(report.smtp)
     if report.spf:

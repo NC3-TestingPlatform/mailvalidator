@@ -277,6 +277,30 @@ class BlacklistResult:
 
 
 # ---------------------------------------------------------------------------
+# DNSSEC models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DNSSECResult:
+    """Result of DNSSEC existence and validity checks for a domain.
+
+    Two :class:`CheckResult` items are produced per assessed domain: one
+    for *existence* (is the zone DNSSEC-signed?) and one for *validity*
+    (does the chain of trust validate to the IANA root?).
+
+    When assessing MX server domains, one pair of checks is appended per
+    MX exchange hostname so :attr:`checks` may contain more than two items.
+
+    :param domain: The primary assessed domain name.
+    :param checks: Individual :class:`CheckResult` items.
+    """
+
+    domain: str
+    checks: list[CheckResult] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Full report
 # ---------------------------------------------------------------------------
 
@@ -298,6 +322,8 @@ class FullReport:
     :param tlsrpt: TLSRPT record validation results.
     :param mta_sts: MTA-STS DNS record and policy file results.
     :param blacklist: DNS blacklist check results for the primary MX IP.
+    :param dnssec_domain: DNSSEC existence and validity for the email address domain.
+    :param dnssec_mx: DNSSEC existence and validity for each MX server domain.
     """
 
     domain: str
@@ -310,3 +336,5 @@ class FullReport:
     tlsrpt: TLSRPTResult | None = None
     mta_sts: MTASTSResult | None = None
     blacklist: BlacklistResult | None = None
+    dnssec_domain: DNSSECResult | None = None
+    dnssec_mx: DNSSECResult | None = None

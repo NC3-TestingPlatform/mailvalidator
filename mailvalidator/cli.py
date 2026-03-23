@@ -35,6 +35,7 @@ from mailvalidator.checks.bimi import check_bimi
 from mailvalidator.checks.blacklist import check_blacklist
 from mailvalidator.checks.dkim import check_dkim
 from mailvalidator.checks.dmarc import check_dmarc
+from mailvalidator.checks.dnssec import check_dnssec_domain, check_dnssec_mx
 from mailvalidator.checks.mta_sts import check_mta_sts
 from mailvalidator.checks.mx import check_mx
 from mailvalidator.checks.smtp import check_smtp
@@ -45,6 +46,8 @@ from mailvalidator.reporter import (
     print_blacklist,
     print_dkim,
     print_dmarc,
+    print_dnssec_domain,
+    print_dnssec_mx,
     print_full_report,
     print_mta_sts,
     print_mx,
@@ -187,6 +190,10 @@ def cmd_check(
         bool,
         typer.Option("--no-blacklist", help="Skip DNS blacklist check."),
     ] = False,
+    no_dnssec: Annotated[
+        bool,
+        typer.Option("--no-dnssec", help="Skip DNSSEC chain-of-trust checks."),
+    ] = False,
 ) -> None:
     """Run all mail server checks for DOMAIN and print a full report."""
     with Progress(
@@ -204,6 +211,7 @@ def cmd_check(
             smtp_port=smtp_port,
             run_smtp=not no_smtp,
             run_blacklist=not no_blacklist,
+            run_dnssec=not no_dnssec,
             progress_cb=_progress_cb,
         )
 
@@ -322,6 +330,21 @@ def cmd_blacklist(
 ) -> None:
     """Check IP against 100+ DNS blacklists."""
     print_blacklist(check_blacklist(ip, max_workers=workers))
+
+
+@app.command("dnssec")
+def cmd_dnssec(
+    domain: Annotated[
+        str,
+        typer.Argument(help="Domain name.", callback=_validate_domain),
+    ],
+) -> None:
+    """Check DNSSEC chain-of-trust for DOMAIN and its MX server domain(s)."""
+    print_dnssec_domain(check_dnssec_domain(domain))
+    mx_result = check_mx(domain)
+    if mx_result.records:
+        mx_domains = [r.exchange for r in mx_result.records]
+        print_dnssec_mx(check_dnssec_mx(mx_domains, email_domain=domain))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -16,6 +16,7 @@ from mailvalidator.models import (
     DMARCResult,
     FullReport,
     MTASTSResult,
+    MXResult,
     SMTPDiagResult,
     SPFResult,
     TLSRPTResult,
@@ -219,7 +220,9 @@ class TestCliCommands:
         assert mock.call_args.kwargs.get("run_blacklist") is False
 
     def test_cmd_check_progress_cb_invoked(self):
-        def _fake_assess(domain, *, smtp_port, run_smtp, run_blacklist, progress_cb):
+        def _fake_assess(
+            domain, *, smtp_port, run_smtp, run_blacklist, run_dnssec, progress_cb
+        ):
             if progress_cb:
                 progress_cb("Checking MX records…")
             return FullReport(domain=domain)
@@ -229,3 +232,56 @@ class TestCliCommands:
             patch("mailvalidator.cli.print_full_report"),
         ):
             assert _runner.invoke(app, ["check", "example.com"]).exit_code == 0
+
+    def test_cmd_check_no_dnssec_flag(self):
+        """--no-dnssec passes run_dnssec=False to assess."""
+        with (
+            patch(
+                "mailvalidator.cli.assess",
+                return_value=FullReport(domain="example.com"),
+            ) as mock,
+            patch("mailvalidator.cli.print_full_report"),
+        ):
+            _runner.invoke(app, ["check", "example.com", "--no-dnssec"])
+        assert mock.call_args.kwargs.get("run_dnssec") is False
+
+
+class TestCmdDnssec:
+    def test_cmd_dnssec_no_mx(self):
+        """dnssec sub-command: prints domain section; skips MX when no records."""
+        from mailvalidator.models import DNSSECResult, MXResult
+
+        dnssec_result = DNSSECResult(domain="example.com")
+        mx_result = MXResult(domain="example.com")
+
+        with (
+            patch("mailvalidator.cli.check_dnssec_domain", return_value=dnssec_result),
+            patch("mailvalidator.cli.check_mx", return_value=mx_result),
+            patch("mailvalidator.cli.print_dnssec_domain") as mock_print_d,
+            patch("mailvalidator.cli.print_dnssec_mx") as mock_print_mx,
+        ):
+            result = _runner.invoke(app, ["dnssec", "example.com"])
+        assert result.exit_code == 0
+        mock_print_d.assert_called_once_with(dnssec_result)
+        mock_print_mx.assert_not_called()
+
+    def test_cmd_dnssec_with_mx(self):
+        """dnssec sub-command: prints both domain and MX sections when MX present."""
+        from mailvalidator.models import DNSSECResult, MXRecord
+
+        dnssec_result = DNSSECResult(domain="example.com")
+        mx_dnssec_result = DNSSECResult(domain="example.com")
+        mx_result = MXResult(domain="example.com")
+        mx_result.records = [MXRecord(priority=10, exchange="mx1.example.com")]
+
+        with (
+            patch("mailvalidator.cli.check_dnssec_domain", return_value=dnssec_result),
+            patch("mailvalidator.cli.check_mx", return_value=mx_result),
+            patch("mailvalidator.cli.check_dnssec_mx", return_value=mx_dnssec_result),
+            patch("mailvalidator.cli.print_dnssec_domain") as mock_print_d,
+            patch("mailvalidator.cli.print_dnssec_mx") as mock_print_mx,
+        ):
+            result = _runner.invoke(app, ["dnssec", "example.com"])
+        assert result.exit_code == 0
+        mock_print_d.assert_called_once_with(dnssec_result)
+        mock_print_mx.assert_called_once_with(mx_dnssec_result)
