@@ -62,7 +62,7 @@ def check_dmarc(domain: str) -> DMARCResult:
     :param domain: The domain whose DMARC record should be validated.
     :type domain: str
     :returns: Result containing the raw record and
-        :class:`~mailcheck.models.CheckResult` items for every validated tag.
+        :class:`~mailvalidator.models.CheckResult` items for every validated tag.
     :rtype: DMARCResult
     """
     result = DMARCResult(domain=domain)
