@@ -50,7 +50,7 @@ $ mailvalidator check example.com
 | **MTA-STS**          | `mailvalidator mta-sts`   | DNS record + HTTPS policy file fetch, mode, max_age, MX entries                                                                                                                                                  |
 | **CAA**              | _(part of smtp)_          | RFC 8659 hierarchy walk, issue/issuewild tags, iodef HTTPS enforcement                                                                                                                                           |
 | **DANE / TLSA**      | _(part of smtp)_          | TLSA existence, SHA-256/SHA-512 fingerprint match, rollover scheme                                                                                                                                               |
-| **Blacklist**        | `mailvalidator blacklist` | 101 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                             |
+| **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                             |
 | **Full Report**      | `mailvalidator check`     | All of the above in one command                                                                                                                                                                                  |
 
 ---
@@ -232,7 +232,7 @@ Beyond cipher grading, the SMTP check also verifies:
 
 ## DNSBL Blacklist Check
 
-101 DNS blacklist zones are queried in parallel using a
+104 DNS blacklist zones are queried in parallel using a
 `ThreadPoolExecutor`. A positive listing is confirmed only when the DNS
 response is exactly `127.0.0.2` (RFC 5782 §2.1 standard "listed" response).
 
