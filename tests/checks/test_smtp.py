@@ -1465,7 +1465,7 @@ class TestCheckDaneEeEeRollover:
         assert "EE + DANE-EE" in rollover.details[0]
 
 
-# ── Final gap: DANE-EE + DANE-TA rollover combination (smtp.py L1863) ────────
+# ── DANE-EE + DANE-TA rollover combination (smtp.py L1863) ────────
 
 
 class TestCheckDaneEeTaRollover:
@@ -1507,3 +1507,234 @@ class TestCheckDaneEeTaRollover:
         rollover = next(c for c in checks if "Rollover" in c.name)
         assert rollover.status == Status.OK
         assert "EE + DANE-TA" in rollover.details[0]
+
+
+# ── CAA RFC-compliance tests (RFC 8659) ───────────────────────────────────────
+
+
+class TestCheckCaaRfcCompliance:
+    # C1: issuewild tag checked independently of issue
+    def test_issuewild_present_without_issue_ok(self):
+        """C1: An issuewild tag without an issue tag is valid for wildcard-only restriction."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issuewild "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert checks[0].status in (Status.OK, Status.WARNING)
+
+    def test_issuewild_deny_all_flagged(self):
+        """C1: issuewild \";\"/deny-all should be reported."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issue "letsencrypt.org"', '0 issuewild ";"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any("issuewild" in d.lower() for d in checks[0].details)
+
+    # C2: issue ";" (deny-all) distinguished from a named CA
+    def test_issue_deny_all_reported(self):
+        """C2: issue \";\" means no CA may issue non-wildcard certs; must be surfaced."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issue ";"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any("deny-all" in d.lower() or '";' in d for d in checks[0].details)
+
+    def test_named_issue_ca_ok(self):
+        """C2: issue with a real CA name should NOT be treated as deny-all."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert checks[0].status == Status.OK
+
+    # C3: No issuewild → note that issue governs wildcards too
+    def test_no_issuewild_noted(self):
+        """C3: When no issuewild is present, issue also governs wildcard issuance."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any(
+            "issuewild" in d.lower() or "wildcard" in d.lower()
+            for d in checks[0].details
+        )
+
+    # C4: Flags byte validation
+    def test_unexpected_flags_value_warns(self):
+        """C4: A non-standard flags value should be reported."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['64 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any("flags" in d.lower() or "64" in d for d in checks[0].details)
+
+    def test_valid_flags_0_ok(self):
+        """C4: Flags value 0 is standard and should not produce a detail warning."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['0 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert not any("unexpected flags" in d.lower() for d in checks[0].details)
+
+    def test_critical_flags_128_ok(self):
+        """C4: Flags value 128 (issuer critical) is defined by RFC 8659 and should be accepted."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['128 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert not any("unexpected flags" in d.lower() for d in checks[0].details)
+
+    # C5: iodef scheme validation
+    def test_iodef_http_warns(self):
+        """C5: Plain HTTP in iodef URL should be flagged."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=[
+                '0 issue "letsencrypt.org"',
+                '0 iodef "http://example.com/caa"',
+            ],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any("http" in d.lower() for d in checks[0].details)
+        assert checks[0].status == Status.WARNING
+
+    def test_iodef_https_ok(self):
+        """C5: HTTPS iodef URL should not trigger a warning."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=[
+                '0 issue "letsencrypt.org"',
+                '0 iodef "https://example.com/caa"',
+            ],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert not any("unsupported scheme" in d.lower() for d in checks[0].details)
+
+    def test_iodef_mailto_ok(self):
+        """C5: mailto: iodef is valid per RFC 8659."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=[
+                '0 issue "letsencrypt.org"',
+                '0 iodef "mailto:ca@example.com"',
+            ],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert not any("unsupported scheme" in d.lower() for d in checks[0].details)
+
+    def test_iodef_ftp_warns(self):
+        """C5: An ftp:// iodef URL uses an unsupported scheme."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=[
+                '0 issue "letsencrypt.org"',
+                '0 iodef "ftp://example.com/caa"',
+            ],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert any("unsupported scheme" in d.lower() for d in checks[0].details)
+
+
+# ── DANE RFC-compliance tests (RFC 6698, RFC 7671) ────────────────────────────
+
+
+class TestCheckDaneRfcCompliance:
+    def _make_cert_der(self) -> bytes:
+        import datetime
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test.example.com")])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+            .not_valid_after(
+                datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=1)
+            )
+            .sign(key, hashes.SHA256())
+        )
+        return cert.public_bytes(serialization.Encoding.DER)
+
+    # D5: Matching type 0 (exact DER) is discouraged by RFC 7671 §5.1
+    def test_matching_type_0_info_noted(self):
+        """D5: A TLSA record with matching type 0 should carry an INFO note."""
+        der = self._make_cert_der()
+        record = f"3 0 0 {der.hex()}"
+        checks: list = []
+        with patch("mailvalidator.checks.smtp.resolve", return_value=[record]):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, der, checks
+            )
+        assert any(
+            c.name == "DANE – Matching Type" and c.status == Status.INFO for c in checks
+        )
+
+    def test_matching_type_1_no_info(self):
+        """D5: Matching type 1 (SHA-256) is recommended and should not trigger D5 note."""
+        import hashlib
+
+        der = self._make_cert_der()
+        fp = hashlib.sha256(der).hexdigest()
+        record = f"3 0 1 {fp}"
+        checks: list = []
+        with patch("mailvalidator.checks.smtp.resolve", return_value=[record]):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, der, checks
+            )
+        assert not any(c.name == "DANE – Matching Type" for c in checks)
+
+    # D6: DNSSEC prerequisite INFO note always present when TLSA records exist
+    def test_dnssec_prerequisite_info_present(self):
+        """D6: When TLSA records are found, a DNSSEC prerequisite note must appear."""
+        import hashlib
+
+        der = self._make_cert_der()
+        fp = hashlib.sha256(der).hexdigest()
+        record = f"3 0 1 {fp}"
+        checks: list = []
+        with patch("mailvalidator.checks.smtp.resolve", return_value=[record]):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, der, checks
+            )
+        assert any(
+            c.name == "DANE – DNSSEC Prerequisite" and c.status == Status.INFO
+            for c in checks
+        )
+
+    def test_no_dnssec_note_when_dane_absent(self):
+        """D6: When there are no TLSA records, no DNSSEC note should appear."""
+        checks: list = []
+        with patch("mailvalidator.checks.smtp.resolve", return_value=[]):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, None, checks
+            )
+        assert not any(c.name == "DANE – DNSSEC Prerequisite" for c in checks)

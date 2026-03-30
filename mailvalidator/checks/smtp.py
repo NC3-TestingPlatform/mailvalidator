@@ -1867,13 +1867,44 @@ def _check_certificate(
 # ---------------------------------------------------------------------------
 
 
+def _parse_caa_record(record: str) -> tuple[int, str, str] | None:
+    """Parse a single CAA record string into ``(flags, tag, value)``.
+
+    CAA records have the format ``<flags> <tag> <value>`` where flags is an
+    integer 0–255, tag is a lower-case ASCII string, and value is a quoted
+    or unquoted string.
+
+    :param record: Raw CAA record string from DNS (e.g. ``'0 issue "letsencrypt.org"'``).
+    :type record: str
+    :returns: ``(flags, tag, value)`` tuple, or ``None`` if the record is malformed.
+    :rtype: tuple[int, str, str] or None
+    """
+    parts = record.split(None, 2)
+    if len(parts) < 3:
+        return None
+    try:
+        flags = int(parts[0])
+    except ValueError:
+        return None
+    tag = parts[1].lower()
+    value = parts[2].strip('"').strip()
+    return flags, tag, value
+
+
 def _check_caa(host: str, checks: list[CheckResult]) -> None:
     """Look up CAA records, walking up the DNS hierarchy from *host*.
 
-    RFC 8659 requires at least one ``issue`` or ``issuewild`` tag to
-    restrict which CAs may issue certificates for the domain.  A plain-HTTP
-    ``iodef`` URL is flagged because incident reports sent over HTTP can be
-    intercepted or tampered with.
+    RFC 8659 requires at least one ``issue`` or ``issuewild`` tag to restrict
+    which CAs may issue certificates for the domain.  Key checks:
+
+    - **C1** ``issuewild`` is validated separately from ``issue``; a domain may
+      restrict non-wildcard and wildcard issuance independently.
+    - **C2** ``issue ";"`` (deny-all) is distinguished from a named CA and
+      reported explicitly.
+    - **C4** The flags byte is inspected; flag bit 0 (value 128, "issuer
+      critical") is reported when present.
+    - **C5** ``iodef`` URLs are validated for scheme; any non-HTTPS/non-mailto
+      scheme is flagged.
 
     :param host: MX hostname to start the DNS hierarchy walk from.
     :type host: str
@@ -1906,26 +1937,106 @@ def _check_caa(host: str, checks: list[CheckResult]) -> None:
         )
         return
 
-    issues: list[str] = []
-    if not any("issue " in r or r.strip().endswith("issue") for r in caa_records):
-        issues.append("No 'issue' tag found; add at least one CAA 'issue' record.")
-    if any(
-        "iodef" in r and "http://" in r and "https://" not in r for r in caa_records
-    ):
-        issues.append(
-            "iodef URL uses plain HTTP; switch to HTTPS to protect incident reports."
+    # Parse all records into (flags, tag, value) triples.
+    parsed: list[tuple[int, str, str]] = []
+    malformed: list[str] = []
+    for record in caa_records:
+        parts = record.split(None, 2)
+        if len(parts) < 3:
+            malformed.append(record)
+            continue
+        try:
+            flags = int(parts[0])
+        except ValueError:
+            malformed.append(record)
+            continue
+        parsed.append((flags, parts[1].lower(), parts[2].strip('"').strip()))
+
+    # Collect by tag.
+    issue_vals = [v for _, t, v in parsed if t == "issue"]
+    issuewild_vals = [v for _, t, v in parsed if t == "issuewild"]
+    iodef_vals = [v for _, t, v in parsed if t == "iodef"]
+
+    # These produce WARNING status.
+    hard_issues: list[str] = []
+    # These are informational notes (shown in details, don't flip status to WARNING).
+    info_notes: list[str] = []
+
+    # C4: Critical flag (128) on an unrecognised tag.
+    known_tags = {"issue", "issuewild", "iodef"}
+    for flags, tag, val in parsed:
+        if (flags & 128) and tag not in known_tags:
+            hard_issues.append(
+                f"Unrecognised critical tag '{tag}' with flag 128 — "
+                "CAs must refuse issuance if they do not understand this tag."
+            )
+
+    # C1 + C2: issue= and issuewild= checked separately.
+    def _is_deny_all(v: str) -> bool:
+        return v in (";", "")
+
+    if not issue_vals and not issuewild_vals:
+        hard_issues.append(
+            "No 'issue' or 'issuewild' tag found; add at least one CAA 'issue' record."
         )
-    if not all(len(r.split()) >= 3 for r in caa_records):
-        issues.append(
+    else:
+        # issue=
+        if not issue_vals:
+            hard_issues.append(
+                "No 'issue' tag found. Without it, 'issuewild' does not restrict "
+                "non-wildcard certificate issuance."
+            )
+        elif all(_is_deny_all(v) for v in issue_vals):
+            # C2: deny-all is valid and strict; note it informatively.
+            info_notes.append(
+                "issue tag is set to ';' (deny-all): no CA is authorised to issue "
+                "non-wildcard certificates for this domain."
+            )
+
+        # issuewild= — C1: report separately.
+        if not issuewild_vals:
+            # C3: absence is an info note, NOT a hard issue — don't change status.
+            info_notes.append(
+                "No 'issuewild' tag found. 'issue' tag(s) also govern wildcard "
+                "certificate issuance per RFC 8659 §4.1."
+            )
+        else:
+            if all(_is_deny_all(v) for v in issuewild_vals):
+                info_notes.append(
+                    "issuewild tag is set to ';' (deny-all): no CA is authorised to "
+                    "issue wildcard certificates for this domain."
+                )
+            # Permissive wildcard alongside deny-all non-wildcard — notable asymmetry.
+            if all(_is_deny_all(v) for v in issue_vals) and any(
+                not _is_deny_all(v) for v in issuewild_vals
+            ):
+                hard_issues.append(
+                    "WARNING: 'issuewild' permits a CA for wildcards while 'issue' "
+                    "denies all non-wildcard issuance — verify this is intentional."
+                )
+
+    # C5: iodef scheme.
+    for val in iodef_vals:
+        if val.startswith("https://") or val.startswith("mailto:"):
+            pass  # valid
+        elif val.startswith("http://"):
+            hard_issues.append(f"iodef URL uses plain HTTP ({val!r}); switch to HTTPS.")
+        else:
+            hard_issues.append(
+                f"iodef URL has an unsupported scheme ({val!r}); use https:// or mailto:."
+            )
+
+    if malformed:
+        hard_issues.append(
             "One or more CAA records appear malformed (expected: flags tag value)."
         )
 
     checks.append(
         CheckResult(
             name="CAA Records",
-            status=Status.OK if not issues else Status.WARNING,
+            status=Status.OK if not hard_issues else Status.WARNING,
             value=f"{len(caa_records)} record(s) at {found_at}",
-            details=caa_records + issues,
+            details=caa_records + hard_issues + info_notes,
         )
     )
 
@@ -2109,6 +2220,7 @@ def _check_dane(
 
     recommended = [r for r in records if r.startswith("2 ") or r.startswith("3 ")]
     pkix_only = [r for r in records if r.startswith("0 ") or r.startswith("1 ")]
+    all_verifiable = recommended + pkix_only  # D2: verify PKIX records too
 
     checks.append(
         CheckResult(
@@ -2126,7 +2238,19 @@ def _check_dane(
         )
     )
 
-    if not recommended:
+    # D6: DNSSEC is a prerequisite for DANE security (RFC 6698 §1).
+    checks.append(
+        CheckResult(
+            name="DANE – DNSSEC Prerequisite",
+            status=Status.INFO,
+            details=[
+                "DANE security depends entirely on the TLSA record being DNSSEC-signed "
+                "(RFC 6698 §1). Verify that DNSSEC is enabled and validated for this zone."
+            ],
+        )
+    )
+
+    if not all_verifiable:
         return
 
     # Certificate fingerprint verification
@@ -2143,14 +2267,31 @@ def _check_dane(
             )
         )
     else:
-        results = [_verify_tlsa_record(r, der) for r in recommended]
-        n_match = sum(ok for ok, _ in results)
-        detail_lines = [desc for _, desc in results]
+        results = []
+        for r in all_verifiable:
+            ok, desc = _verify_tlsa_record(r, der)
+            # D1: DANE-TA records — add best-effort caveat.
+            if r.startswith("2 "):
+                desc += (
+                    " [DANE-TA: verified against end-entity cert as best-effort; "
+                    "full chain verification requires the complete cert chain]"
+                )
+            # D2: label PKIX records.
+            if r.startswith("0 ") or r.startswith("1 "):
+                desc += " [PKIX-constrained usage]"
+            results.append((ok, desc, r))
 
-        if n_match > 0:
-            if n_match < len(results):
+        n_match = sum(ok for ok, _, _ in results)
+        n_recommended_match = sum(
+            ok for ok, _, r in results if r.startswith("2 ") or r.startswith("3 ")
+        )
+        detail_lines = [desc for _, desc, _ in results]
+
+        if n_recommended_match > 0 or (not recommended and n_match > 0):
+            non_matching = len(results) - n_match
+            if non_matching > 0:
                 detail_lines.append(
-                    f"{len(results) - n_match} non-matching record(s) appear to be pre-published "
+                    f"{non_matching} non-matching record(s) appear to be pre-published "
                     "for the next certificate (rollover) — this is expected and correct."
                 )
             checks.append(
@@ -2175,7 +2316,27 @@ def _check_dane(
                 )
             )
 
-    # Rollover scheme assessment
+    # D5: Matching type 0 (exact hex) is discouraged by RFC 7671 §5.1.
+    type0_records = [
+        r for r in all_verifiable if len(r.split()) >= 3 and r.split()[2] == "0"
+    ]
+    if type0_records:
+        checks.append(
+            CheckResult(
+                name="DANE – Matching Type",
+                status=Status.INFO,
+                details=[
+                    f"{len(type0_records)} record(s) use matching type 0 (exact hex). "
+                    "RFC 7671 §5.1 discourages this in favour of SHA-256(1) or SHA-512(2) "
+                    "because it makes key rotation harder."
+                ],
+            )
+        )
+
+    # Rollover scheme assessment (recommended records only).
+    if not recommended:
+        return
+
     n_ee = sum(1 for r in recommended if r.startswith("3 "))
     n_ta = sum(1 for r in recommended if r.startswith("2 "))
 

@@ -43,13 +43,29 @@ def check_bimi(domain: str) -> BIMIResult:
         )
         return result
 
+    # B1: Multiple BIMI records are a misconfiguration — flag as ERROR.
+    if len(bimi_records) > 1:
+        result.checks.append(
+            CheckResult(
+                name="BIMI Record",
+                status=Status.ERROR,
+                details=[
+                    f"Multiple BIMI records found at {bimi_name}. "
+                    "Exactly one record is required by the BIMI specification.",
+                ],
+            )
+        )
+        return result
+
     record = bimi_records[0]
     result.record = record
     result.checks.append(
         CheckResult(name="BIMI Record", status=Status.OK, details=[record])
     )
 
-    _validate(_parse_tags(record), result)
+    tags = _parse_tags(record)
+    _warn_unknown_tags(tags, result)
+    _validate(tags, result)
     return result
 
 
@@ -66,6 +82,29 @@ def _parse_tags(record: str) -> dict[str, str]:
             k, _, v = part.partition("=")
             tags[k.strip()] = v.strip()
     return tags
+
+
+_KNOWN_TAGS: frozenset[str] = frozenset({"v", "l", "a"})
+
+
+def _warn_unknown_tags(tags: dict[str, str], result: BIMIResult) -> None:
+    """B3: Warn about unknown tags that may indicate typos.
+
+    :param tags: Parsed tag/value pairs from the BIMI record.
+    :param result: Result object to append check items to.
+    """
+    unknown = [k for k in tags if k not in _KNOWN_TAGS]
+    if unknown:
+        result.checks.append(
+            CheckResult(
+                name="Unknown Tags",
+                status=Status.WARNING,
+                details=[
+                    f"Unknown tag(s) found: {', '.join(unknown)}. "
+                    "Check for typos — the BIMI specification only defines v=, l=, and a=.",
+                ],
+            )
+        )
 
 
 def _validate(tags: dict[str, str], result: BIMIResult) -> None:
@@ -87,7 +126,19 @@ def _validate(tags: dict[str, str], result: BIMIResult) -> None:
 
     # --- Logo URL (l=) ---
     l_tag = tags.get("l", "")
-    if not l_tag:
+    if l_tag == "" and "l" in tags:
+        # B2: An explicit empty l= is a valid VMC-only configuration, not a warning.
+        result.checks.append(
+            CheckResult(
+                name="Logo URL (l=)",
+                status=Status.INFO,
+                details=[
+                    "l= is explicitly empty. This is a valid VMC-only configuration "
+                    "used when the logo is conveyed solely through the a= certificate."
+                ],
+            )
+        )
+    elif not l_tag:
         result.checks.append(
             CheckResult(
                 name="Logo URL (l=)",
@@ -120,8 +171,24 @@ def _validate(tags: dict[str, str], result: BIMIResult) -> None:
     # such as Gmail and Apple Mail to actually display the logo.
     a_tag = tags.get("a", "")
     if a_tag:
+        # B4: Validate the a= URL scheme and expected file extension.
+        a_details: list[str] = []
+        if not a_tag.startswith("https://"):
+            a_details.append(
+                "Authority evidence URL must use HTTPS (e.g. https://example.com/cert.pem)."
+            )
+        lower_a = a_tag.lower()
+        if not (lower_a.endswith(".pem") or lower_a.endswith(".crt")):
+            a_details.append(
+                "VMC file should have a .pem or .crt extension per the BIMI specification."
+            )
         result.checks.append(
-            CheckResult(name="Authority Evidence (a=)", status=Status.INFO, value=a_tag)
+            CheckResult(
+                name="Authority Evidence (a=)",
+                status=Status.WARNING if a_details else Status.INFO,
+                value=a_tag,
+                details=a_details,
+            )
         )
     else:
         result.checks.append(

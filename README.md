@@ -13,7 +13,7 @@ $ mailvalidator check example.com
 ```
 
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-![Tests](https://img.shields.io/badge/tests-450%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
@@ -45,11 +45,11 @@ $ mailvalidator check example.com
 | **SPF**              | `mailvalidator spf`       | Record lookup; `all`-qualifier grading; recursive `include:`/`redirect=` resolution with per-branch visited tracking; RFC 7208 §4.6.4 DNS lookup limit (10) and void lookup limit (2); `a/cidr` and `mx/cidr` mechanism counting; `include:` qualifier surfacing; nested `+all` detection; `exp=` modifier noted; `ptr` deprecation warning |
 | **DMARC**            | `mailvalidator dmarc`     | Full RFC 7489 validation: policy grading, sp, pct range, adkim/aspf, fo, ri, rua/ruf scheme + mailto syntax + external destination verification (§7.1)                                                                                                                                                                                      |
 | **DKIM**             | `mailvalidator dkim`      | Base-node (`_domainkey.<domain>`) RFC 2308 existence check                                                                                                                                                                                                                                                                                  |
-| **BIMI**             | `mailvalidator bimi`      | Record lookup, logo URL (HTTPS + SVG), VMC authority evidence                                                                                                                                                                                                                                                                               |
-| **TLSRPT**           | `mailvalidator tlsrpt`    | RFC 8460 record lookup, rua scheme validation (mailto/HTTPS)                                                                                                                                                                                                                                                                                |
-| **MTA-STS**          | `mailvalidator mta-sts`   | DNS record + HTTPS policy file fetch, mode, max_age, MX entries                                                                                                                                                                                                                                                                             |
-| **CAA**              | _(part of smtp)_          | RFC 8659 hierarchy walk, issue/issuewild tags, iodef HTTPS enforcement                                                                                                                                                                                                                                                                      |
-| **DANE / TLSA**      | _(part of smtp)_          | TLSA existence, SHA-256/SHA-512 fingerprint match, rollover scheme                                                                                                                                                                                                                                                                          |
+| **BIMI**             | `mailvalidator bimi`      | Record lookup; multiple-record detection (exactly one required); logo URL (HTTPS + SVG/.svg.gz); empty `l=` VMC-only configuration; authority evidence `a=` (HTTPS, .pem/.crt format); unknown tag detection                                                                                                                                |
+| **TLSRPT**           | `mailvalidator tlsrpt`    | RFC 8460: multiple-record detection; `v=` ordering (must be first tag); `rua=` required, at most two URIs, `mailto:` address syntax validation, `https://` scheme; unknown tag detection                                                                                                                                                    |
+| **MTA-STS**          | `mailvalidator mta-sts`   | RFC 8461: multiple DNS record detection; `id=` format (1–32 alphanumeric); policy file `Content-Type: text/plain`; `version: STSv1` field; `mode` grading; `max_age` range (1 day – 1 year); `mx` hostname/wildcard pattern validation; CRLF line-ending conformance; `v=` tag ordering in DNS record                                       |
+| **CAA**              | _(part of smtp)_          | RFC 8659: hierarchy walk; `issue` / `issuewild` tags checked independently; deny-all (`issue ";"`) surfaced; wildcard governance note when `issuewild` is absent; flags byte validation; `iodef` scheme validation (https:// or mailto: only)                                                                                               |
+| **DANE / TLSA**      | _(part of smtp)_          | RFC 6698 / RFC 7671: TLSA existence; SHA-256/SHA-512 fingerprint match; rollover scheme; matching type 0 discouraged (RFC 7671 §5.1); DNSSEC prerequisite noted                                                                                                                                                                             |
 | **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                                                                                                                                                        |
 | **Full Report**      | `mailvalidator check`     | All of the above in one command                                                                                                                                                                                                                                                                                                             |
 
@@ -303,7 +303,7 @@ pytest tests/checks/test_smtp.py
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **450 tests** and achieves **100% coverage** of all
+The test suite has **504 tests** and achieves **100% coverage** of all
 testable code. SMTP network I/O functions (`_probe_tls`, `check_smtp`, etc.)
 require a live mail server and are excluded from unit tests via
 `# pragma: no cover`; integration tests against a real server are out of

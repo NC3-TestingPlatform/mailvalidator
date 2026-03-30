@@ -12,6 +12,12 @@ import re
 from mailvalidator.dns_utils import resolve
 from mailvalidator.models import CheckResult, Status, TLSRPTResult
 
+# RFC 8460 §3.1 — at most two URIs in the rua= list.
+_MAX_RUA_URIS = 2
+
+# RFC 8460 §3.1 — v=TLSRPTv1 must be the first tag in the record.
+_FIRST_TAG_RE = re.compile(r"^\s*v\s*=\s*TLSRPTv1", re.IGNORECASE)
+
 
 def check_tlsrpt(domain: str) -> TLSRPTResult:
     """Look up and validate the TLSRPT record at ``_smtp._tls.<domain>``.
@@ -41,6 +47,22 @@ def check_tlsrpt(domain: str) -> TLSRPTResult:
         )
         return result
 
+    # T1: Multiple TLSRPT records matching v=TLSRPTv1 are undefined behaviour
+    # per RFC 8460 §3 — flag as ERROR.
+    if len(tls_records) > 1:
+        result.checks.append(
+            CheckResult(
+                name="TLSRPT Record",
+                status=Status.ERROR,
+                details=[
+                    f"Multiple TLSRPT records found at {tlsrpt_name}. "
+                    "RFC 8460 §3 states behaviour is undefined when more than one "
+                    "matching record exists; remove all but one.",
+                ],
+            )
+        )
+        return result
+
     record = tls_records[0]
     result.record = record
     result.checks.append(
@@ -48,7 +70,8 @@ def check_tlsrpt(domain: str) -> TLSRPTResult:
     )
 
     tags = _parse_tags(record)
-    _validate(tags, result)
+    _warn_unknown_tags(tags, result)
+    _validate(tags, record, result)
     return result
 
 
@@ -68,11 +91,36 @@ def _parse_tags(record: str) -> dict[str, str]:
     return tags
 
 
-def _validate(tags: dict[str, str], result: TLSRPTResult) -> None:
+_KNOWN_TAGS: frozenset[str] = frozenset({"v", "rua"})
+
+
+def _warn_unknown_tags(tags: dict[str, str], result: TLSRPTResult) -> None:
+    """T4: Surface unknown tags that may indicate typos (e.g. ``ru=`` instead of ``rua=``).
+
+    :param tags: Parsed TLSRPT tag dictionary.
+    :param result: Result object to append check items to.
+    """
+    unknown = [k for k in tags if k not in _KNOWN_TAGS]
+    if unknown:
+        result.checks.append(
+            CheckResult(
+                name="Unknown Tags",
+                status=Status.WARNING,
+                details=[
+                    f"Unknown tag(s) found: {', '.join(unknown)}. "
+                    "RFC 8460 §3.1 defines only v= and rua=; check for typos.",
+                ],
+            )
+        )
+
+
+def _validate(tags: dict[str, str], raw_record: str, result: TLSRPTResult) -> None:
     """Validate TLSRPT tag values and append :class:`~mailvalidator.models.CheckResult` items to *result*.
 
     :param tags: Parsed TLSRPT tag dictionary from :func:`_parse_tags`.
     :type tags: dict[str, str]
+    :param raw_record: The original raw record string (used for ordering check).
+    :type raw_record: str
     :param result: Result object to which check items are appended.
     :type result: TLSRPTResult
     """
@@ -82,9 +130,23 @@ def _validate(tags: dict[str, str], result: TLSRPTResult) -> None:
             CheckResult(name="Version", status=Status.ERROR, value=v or "(missing)")
         )
     else:
-        result.checks.append(
-            CheckResult(name="Version", status=Status.OK, value="TLSRPTv1")
-        )
+        # T5: v=TLSRPTv1 must be the first tag (RFC 8460 §3.1).
+        if not _FIRST_TAG_RE.match(raw_record):
+            result.checks.append(
+                CheckResult(
+                    name="Version",
+                    status=Status.WARNING,
+                    value="TLSRPTv1",
+                    details=[
+                        "v=TLSRPTv1 is not the first tag in the record. "
+                        "RFC 8460 §3.1 requires v= to appear first."
+                    ],
+                )
+            )
+        else:
+            result.checks.append(
+                CheckResult(name="Version", status=Status.OK, value="TLSRPTv1")
+            )
 
     rua = tags.get("rua", "")
     if not rua:
@@ -98,11 +160,36 @@ def _validate(tags: dict[str, str], result: TLSRPTResult) -> None:
         return
 
     uris = [u.strip() for u in rua.split(",")]
+
+    # T2: RFC 8460 §3.1 permits at most two URIs in the rua= list.
+    if len(uris) > _MAX_RUA_URIS:
+        result.checks.append(
+            CheckResult(
+                name="Reporting URI (rua=)",
+                status=Status.WARNING,
+                details=[
+                    f"{len(uris)} URIs found in rua=; RFC 8460 §3.1 permits at most {_MAX_RUA_URIS}.",
+                ],
+            )
+        )
+
     for uri in uris:
         if uri.startswith("mailto:"):
-            result.checks.append(
-                CheckResult(name="Reporting URI", status=Status.OK, value=uri)
-            )
+            # T3: Validate syntactic correctness of mailto: URIs.
+            address = uri[len("mailto:") :]
+            if not address or "@" not in address:
+                result.checks.append(
+                    CheckResult(
+                        name="Reporting URI",
+                        status=Status.WARNING,
+                        value=uri,
+                        details=["mailto: URI does not contain a valid email address."],
+                    )
+                )
+            else:
+                result.checks.append(
+                    CheckResult(name="Reporting URI", status=Status.OK, value=uri)
+                )
         elif uri.startswith("https://"):
             result.checks.append(
                 CheckResult(name="Reporting URI", status=Status.OK, value=uri)

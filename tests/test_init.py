@@ -14,12 +14,12 @@ class TestInit:
         assert len(mailvalidator.__version__) > 0
 
     def test_version_fallback_when_not_installed(self):
-        """PackageNotFoundError triggers the '0.1.2' fallback."""
+        """PackageNotFoundError triggers the '0.1.3' fallback."""
         from importlib.metadata import PackageNotFoundError, version
 
         with patch("mailvalidator.version", side_effect=PackageNotFoundError()):
             try:
                 v = version("mailvalidator")
             except PackageNotFoundError:
-                v = "0.1.2"
-        assert v == "0.1.2"
+                v = "0.1.3"
+        assert v == "0.1.3"
