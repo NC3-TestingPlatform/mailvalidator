@@ -165,7 +165,7 @@ def print_mx(result: MXResult) -> None:
         Panel(
             content,
             title=f"[bold]MX Records[/bold] – {result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -236,7 +236,7 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
             Panel(
                 content,
                 title=f"[bold]SMTP Diagnostics[/bold] – {r.host}:{r.port}",
-                style="blue",
+                style="white",
                 padding=(0, 1),
             )
         )
@@ -252,7 +252,7 @@ def print_dkim(result: DKIMResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DKIM[/bold] – _domainkey.{result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -268,7 +268,7 @@ def print_bimi(result: BIMIResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]BIMI[/bold] – default._bimi.{result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -284,7 +284,7 @@ def print_tlsrpt(result: TLSRPTResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]TLSRPT[/bold] – _smtp._tls.{result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -305,7 +305,7 @@ def print_blacklist(result: BlacklistResult) -> None:
         Panel(
             Group(Text.from_markup(summary), _checks_table(result.checks)),
             title=f"[bold]Blacklist / Blocklist Check[/bold] – {result.ip}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -321,7 +321,7 @@ def print_spf(result: SPFResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]SPF[/bold] – {result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -337,7 +337,7 @@ def print_dmarc(result: DMARCResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DMARC[/bold] – _dmarc.{result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -353,7 +353,7 @@ def print_mta_sts(result: MTASTSResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]MTA-STS[/bold] – {result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -369,7 +369,7 @@ def print_dnssec_domain(result: DNSSECResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DNSSEC – Email Domain[/bold] – {result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
@@ -385,7 +385,7 @@ def print_dnssec_mx(result: DNSSECResult) -> None:
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DNSSEC – Mail Server Domain(s)[/bold] – {result.domain}",
-            style="blue",
+            style="white",
             padding=(0, 1),
         )
     )
