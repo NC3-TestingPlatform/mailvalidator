@@ -13,7 +13,7 @@ $ mailvalidator check example.com
 ```
 
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-536%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
@@ -40,7 +40,7 @@ $ mailvalidator check example.com
 | -------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection                                                                                                                                                                                                                                                                              |
 | **DNSSEC**           | `mailvalidator dnssec`    | Chain-of-trust validation (Trust Anchor → `.` → TLD → domain) for the email address domain and each MX host domain; CNAME chain following; DANE prerequisite annotation (RFC 7671)                                                                                                                                                          |
-| **SMTP Diagnostics** | `mailvalidator smtp`      | TCP connect latency, banner, PTR record, open relay, STARTTLS                                                                                                                                                                                                                                                                               |
+| **SMTP Diagnostics** | `mailvalidator smtp`      | See [SMTP check details](#smtp-check-rfc-5321) below                                                                                                                                                                                                                                                                                        |
 | **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry                                                                                                                            |
 | **SPF**              | `mailvalidator spf`       | Record lookup; `all`-qualifier grading; recursive `include:`/`redirect=` resolution with per-branch visited tracking; RFC 7208 §4.6.4 DNS lookup limit (10) and void lookup limit (2); `a/cidr` and `mx/cidr` mechanism counting; `include:` qualifier surfacing; nested `+all` detection; `exp=` modifier noted; `ptr` deprecation warning |
 | **DMARC**            | `mailvalidator dmarc`     | Full RFC 7489 validation: policy grading, sp, pct range, adkim/aspf, fo, ri, rua/ruf scheme + mailto syntax + external destination verification (§7.1)                                                                                                                                                                                      |
@@ -52,6 +52,33 @@ $ mailvalidator check example.com
 | **DANE / TLSA**      | _(part of smtp)_          | RFC 6698 / RFC 7671: TLSA existence; SHA-256/SHA-512 fingerprint match; rollover scheme; matching type 0 discouraged (RFC 7671 §5.1); DNSSEC prerequisite noted                                                                                                                                                                             |
 | **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                                                                                                                                                        |
 | **Full Report**      | `mailvalidator check`     | All of the above in one command                                                                                                                                                                                                                                                                                                             |
+
+### SMTP check (RFC 5321)
+
+The SMTP check targets **external-facing MX servers** that accept inbound mail
+on **port 25** (RFC 5321 §2.1, §4.5.3.2). Port 587 is the _submission_ port
+(RFC 6409) and requires AUTH — it is a different service and these checks are
+not meaningful against it.
+
+| Sub-check                | RFC reference                          | What is verified                                                                         |
+| ------------------------ | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Connect / latency**    | RFC 5321 §3.1                          | TCP connect time and 220 banner                                                          |
+| **Banner FQDN**          | RFC 5321 §4.1.3                        | 220 greeting MUST include the server's fully-qualified domain name; bare IPs are flagged |
+| **Reverse DNS (PTR)**    | Best practice                          | Server IP must have a PTR record; many receivers reject mail without one                 |
+| **EHLO domain**          | RFC 5321 §4.1.1.1                      | EHLO 250 response MUST name the server as a valid FQDN; IP domain literals are flagged   |
+| **ESMTP extensions**     | RFC 1870, RFC 2920, RFC 6152, RFC 6531 | Presence of SIZE, PIPELINING, 8BITMIME, SMTPUTF8                                         |
+| **STARTTLS**             | RFC 3207                               | STARTTLS advertisement                                                                   |
+| **VRFY command**         | RFC 5321 §3.5.3                        | 252 = privacy-preserving (recommended); 502 = disabled (acceptable); other codes noted   |
+| **Open relay**           | RFC 5321 §3.9                          | Server must reject relaying for unrelated external addresses                             |
+| **TLS versions**         | NCSC-NL TLS guidelines                 | TLS 1.3 OK · TLS 1.2 Sufficient · TLS 1.1/1.0 Phase-out                                  |
+| **Cipher suites**        | NCSC-NL TLS guidelines                 | 34 suites graded Good / Sufficient / Phase-out / Insufficient                            |
+| **Cipher order**         | NCSC-NL TLS guidelines                 | Server-preference enforcement and Good→Sufficient→Phase-out ordering                     |
+| **Key exchange**         | NCSC-NL TLS guidelines                 | ECDHE curve and DHE group strength                                                       |
+| **TLS compression**      | CVE-2012-4929                          | Deflate/zlib compression enables the CRIME attack                                        |
+| **Secure renegotiation** | RFC 5746                               | Renegotiation Info extension                                                             |
+| **Certificate**          | RFC 5280, RFC 6125                     | Trust chain, public key strength, signature algorithm, SAN/CN domain match, expiry       |
+| **CAA records**          | RFC 8659                               | Issue/issuewild/iodef tags; flags byte; hierarchy walk                                   |
+| **DANE / TLSA**          | RFC 6698, RFC 7671                     | TLSA existence, fingerprint verification, rollover scheme                                |
 
 ---
 
@@ -68,23 +95,20 @@ $ mailvalidator check example.com
 
 ## Installation
 
-**From source:**
+**From source (recommended):**
 
 ```bash
 git clone --recurse-submodules https://github.com/t0kubetsu/mailvalidator.git
 cd mailvalidator
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-**As an editable package:**
-
-```bash
-pip install -e .
+pip install -e ".[dev]"   # installs the CLI + all dev/test dependencies
 ```
 
 The `mailvalidator` command is then available in your shell.
+
+> **Note:** `--recurse-submodules` is required — `vendor/chainvalidator` is a
+> git submodule and will be missing without it.
 
 ---
 
@@ -256,7 +280,7 @@ mailvalidator/
 │   └── checks/
 │       ├── mx.py
 │       ├── dnssec.py      DNSSEC chain-of-trust checks (requires chainvalidator)
-│       ├── smtp.py        SMTP diagnostics + deep TLS inspection
+│       ├── smtp.py        SMTP diagnostics + deep TLS inspection (RFC 5321)
 │       ├── spf.py
 │       ├── dmarc.py
 │       ├── dkim.py
@@ -293,24 +317,27 @@ mailvalidator/
 ```bash
 source .venv/bin/activate
 
-# Run all tests
-pytest tests/
+# Run all tests with coverage (configured automatically via pyproject.toml)
+pytest
 
 # Run a single module
-pytest tests/checks/test_smtp.py
+pytest tests/checks/test_smtp.py -v
 
 # Run a single test class
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **504 tests** and achieves **100% coverage** of all
-testable code. SMTP network I/O functions (`_probe_tls`, `check_smtp`, etc.)
-require a live mail server and are excluded from unit tests via
-`# pragma: no cover`; integration tests against a real server are out of
-scope for the unit suite. DNSSEC checks call chainvalidator's `assess()`
-with all DNS I/O mocked at the boundary — no real nameserver is contacted
-during the test run. File export is tested by mocking Rich's
-`console.save_text`, `save_svg`, and `save_html` methods.
+The test suite has **536 tests** and achieves **100% coverage** (1 658
+statements) across all 17 modules. Coverage reporting is pre-configured in
+`pyproject.toml` — no extra flags needed.
+
+SMTP network I/O functions (`_probe_tls`, `check_smtp`, etc.) require a live
+mail server and are excluded from unit tests via `# pragma: no cover`;
+integration tests against a real server are out of scope for the unit suite.
+DNSSEC checks call chainvalidator's `assess()` with all DNS I/O mocked at
+the boundary — no real nameserver is contacted during the test run. File
+export is tested by mocking Rich's `console.save_text`, `save_svg`, and
+`save_html` methods.
 
 ---
 
@@ -318,8 +345,10 @@ during the test run. File export is tested by mocking Rich's
 
 1. Fork the repository and create a feature branch.
 2. Add or update tests — the project targets 100% unit test coverage.
-3. Run `pytest tests/` and confirm all tests pass before opening a pull request.
+3. Run `pytest` and confirm all 536 tests pass before opening a pull request.
 4. Follow the existing docstring format (reStructuredText / docutils field lists).
+5. Use [conventional commits](https://www.conventionalcommits.org/):
+   `fix:`, `feat:`, `refactor:`, `test:`, `docs:`, `chore:`
 
 ---
 

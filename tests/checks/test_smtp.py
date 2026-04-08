@@ -15,12 +15,15 @@ import pytest
 
 from mailvalidator.checks.smtp import (
     _cert_info,
+    _check_banner_fqdn,
     _check_caa,
     _check_certificate,
     _check_cipher,
     _check_cipher_order,
     _check_compression,
     _check_dane,
+    _check_ehlo_domain,
+    _check_extensions,
     _check_hash_function,
     _check_key_exchange,
     _check_renegotiation,
@@ -1738,3 +1741,294 @@ class TestCheckDaneRfcCompliance:
                 "mail.example.com", 25, "mailvalidator.local", None, None, checks
             )
         assert not any(c.name == "DANE – DNSSEC Prerequisite" for c in checks)
+
+
+# ── RFC 5321 plain-SMTP checks ────────────────────────────────────────────────
+
+
+class TestCheckBannerFqdn:
+    """Tests for _check_banner_fqdn (RFC 5321 §4.1.3).
+
+    The 220 greeting MUST include the server's FQDN (RFC 5321 §4.1.3).
+    """
+
+    def _run(self, banner: str) -> list:
+        checks: list = []
+        _check_banner_fqdn(banner, checks)
+        return checks
+
+    def test_valid_fqdn_ok(self):
+        checks = self._run("220 mail.example.com ESMTP Postfix")
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "mail.example.com"
+
+    def test_fqdn_with_trailing_dot_ok(self):
+        """A trailing dot is valid in DNS names."""
+        checks = self._run("220 mail.example.com. ESMTP")
+        assert checks[0].status == Status.OK
+
+    def test_subdomain_ok(self):
+        checks = self._run("220 mx1.mail.example.co.uk ESMTP")
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "mx1.mail.example.co.uk"
+
+    def test_220_prefix_stripped(self):
+        """The '220 ' code prefix must be stripped before parsing the domain."""
+        checks = self._run("220 smtp.example.org ESMTP ready")
+        assert checks[0].value == "smtp.example.org"
+
+    def test_bare_ipv4_warning(self):
+        """RFC 5321 allows bare IPs but public MX servers should use a FQDN."""
+        checks = self._run("220 203.0.113.42 ESMTP")
+        assert checks[0].status == Status.WARNING
+        assert "IP address" in checks[0].details[0]
+
+    def test_ipv6_bracket_warning(self):
+        checks = self._run("220 [2001:db8::1] ESMTP")
+        assert checks[0].status == Status.WARNING
+
+    def test_single_label_error(self):
+        """A single-label name like 'mailserver' is not a valid FQDN."""
+        checks = self._run("220 mailserver ESMTP")
+        assert checks[0].status == Status.ERROR
+
+    def test_empty_banner_error(self):
+        checks = self._run("")
+        assert checks[0].status == Status.ERROR
+
+    def test_banner_code_only_error(self):
+        """'220' with no following token must be flagged."""
+        checks = self._run("220")
+        assert checks[0].status == Status.ERROR
+
+    def test_banner_without_220_prefix_valid_fqdn(self):
+        """smtplib may strip the numeric code; bare FQDN should still pass."""
+        checks = self._run("mail.example.com ESMTP Postfix")
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "mail.example.com"
+
+
+class TestCheckEhloDomain:
+    """Tests for _check_ehlo_domain (RFC 5321 §4.1.1.1).
+
+    The EHLO 250 response MUST include the server's FQDN on the first line.
+    """
+
+    def _make_smtp(self, ehlo_resp: bytes | None) -> object:
+        smtp = MagicMock(spec=smtplib.SMTP)
+        smtp.ehlo_resp = ehlo_resp
+        return smtp
+
+    def test_valid_fqdn_ok(self):
+        smtp = self._make_smtp(b"250-mail.example.com\r\n250 STARTTLS")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "mail.example.com"
+
+    def test_250_space_format_ok(self):
+        """Single-line EHLO response (250 <domain>) with no extensions."""
+        smtp = self._make_smtp(b"250 smtp.example.org")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "smtp.example.org"
+
+    def test_domain_literal_warning(self):
+        """[x.x.x.x] domain literal is RFC-conformant (§2.3.5) but unusual."""
+        smtp = self._make_smtp(b"250-[203.0.113.1]\r\n250 STARTTLS")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.WARNING
+        assert "domain literal" in checks[0].details[0]
+
+    def test_single_label_error(self):
+        smtp = self._make_smtp(b"250 mailserver")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.ERROR
+
+    def test_no_ehlo_resp_warning(self):
+        smtp = self._make_smtp(None)
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.WARNING
+
+    def test_empty_ehlo_resp_warning(self):
+        smtp = self._make_smtp(b"")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status in (Status.WARNING, Status.ERROR)
+
+    def test_subdomain_fqdn_ok(self):
+        smtp = self._make_smtp(b"250-mx1.mail.example.co.uk\r\n250 STARTTLS")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.OK
+        assert checks[0].value == "mx1.mail.example.co.uk"
+
+    def test_invalid_token_error(self):
+        """A token that is neither an FQDN nor a domain literal must be flagged."""
+        smtp = self._make_smtp(b"250 @invalid!")
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.ERROR
+
+
+class TestCheckExtensions:
+    """Tests for _check_extensions (RFC 1870, RFC 2920, RFC 6152, RFC 6531).
+
+    ESMTP extension reporting is informational; absence of optional extensions
+    is INFO, not WARNING/ERROR.
+    """
+
+    def _make_smtp(self, features: dict) -> object:
+        smtp = MagicMock(spec=smtplib.SMTP)
+        smtp.esmtp_features = {k.lower(): v for k, v in features.items()}
+        smtp.has_extn = lambda ext: ext.upper() in {k.upper() for k in features}
+        return smtp
+
+    def test_all_extensions_present_ok(self):
+        smtp = self._make_smtp(
+            {"SIZE": "10240000", "PIPELINING": "", "8BITMIME": "", "SMTPUTF8": ""}
+        )
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert checks[0].status == Status.OK
+
+    def test_some_missing_info(self):
+        smtp = self._make_smtp({"SIZE": "10240000"})
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert checks[0].status == Status.INFO
+        assert "Not advertised" in checks[0].details[-1]
+
+    def test_none_present_info(self):
+        smtp = self._make_smtp({})
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert checks[0].status == Status.INFO
+
+    def test_size_value_included_in_details(self):
+        """SIZE=<n> value should appear in the advertised detail line."""
+        smtp = self._make_smtp(
+            {"SIZE": "52428800", "PIPELINING": "", "8BITMIME": "", "SMTPUTF8": ""}
+        )
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert "52428800" in checks[0].details[0]
+
+    def test_pipelining_advertised(self):
+        smtp = self._make_smtp(
+            {"PIPELINING": "", "SIZE": "", "8BITMIME": "", "SMTPUTF8": ""}
+        )
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert "PIPELINING" in checks[0].details[0]
+
+    def test_result_value_shows_count(self):
+        """The value field should report N of M extensions checked."""
+        smtp = self._make_smtp({"SIZE": "", "PIPELINING": ""})
+        checks: list = []
+        _check_extensions(smtp, checks)
+        assert "of 4" in checks[0].value
+
+
+# ── _parse_caa_record (lines 1900-1909) ───────────────────────────────────────
+
+
+class TestParseCaaRecord:
+    """Direct unit tests for the _parse_caa_record helper."""
+
+    def setup_method(self):
+        from mailvalidator.checks.smtp import _parse_caa_record
+        self._fn = _parse_caa_record
+
+    def test_valid_record_parsed(self):
+        result = self._fn('0 issue "letsencrypt.org"')
+        assert result == (0, "issue", "letsencrypt.org")
+
+    def test_too_few_parts_returns_none(self):
+        assert self._fn("badrecord") is None
+
+    def test_non_integer_flags_returns_none(self):
+        assert self._fn('abc issue "letsencrypt.org"') is None
+
+
+# ── _check_caa: uncovered branches (lines 1968-1970, 1987) ───────────────────
+
+
+class TestCheckCaaUncoveredBranches:
+    def test_non_integer_flags_treated_as_malformed(self):
+        """Lines 1968-1970: a record with non-integer flags is appended to malformed."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['abc issue "letsencrypt.org"', '0 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert checks[0].status == Status.WARNING
+        assert any("malformed" in d.lower() for d in checks[0].details)
+
+    def test_critical_unrecognised_tag_warns(self):
+        """Line 1987: flag 128 on an unknown tag must produce a WARNING."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=['128 unknowntag "value"', '0 issue "letsencrypt.org"'],
+        ):
+            _check_caa("mail.example.com", checks)
+        assert checks[0].status == Status.WARNING
+        assert any("Unrecognised critical tag" in d or "unrecognised critical tag" in d for d in checks[0].details)
+
+
+# ── _check_dane: uncovered branches (lines 2272, 2299) ────────────────────────
+
+
+class TestCheckDaneUncoveredBranches:
+    def test_unknown_usage_type_skips_cert_verification(self):
+        """Line 2272: when all TLSA records have usage ≥ 4, all_verifiable is
+        empty and the function returns before fingerprint verification."""
+        checks: list = []
+        with patch(
+            "mailvalidator.checks.smtp.resolve",
+            return_value=["4 0 1 " + "aa" * 32],
+        ):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, None, checks
+            )
+        assert not any("Match" in c.name for c in checks)
+
+    def test_pkix_record_with_cert_gets_pkix_label(self):
+        """Line 2299: a PKIX-EE(1) or PKIX-TA(0) record verified against a real
+        cert gets a '[PKIX-constrained usage]' label in the Match check details."""
+        import hashlib
+        from tests.conftest import make_rsa_cert_der
+
+        der = make_rsa_cert_der()
+        fp = hashlib.sha256(der).hexdigest()
+        record = f"1 0 1 {fp}"
+        checks: list = []
+        with patch("mailvalidator.checks.smtp.resolve", return_value=[record]):
+            _check_dane(
+                "mail.example.com", 25, "mailvalidator.local", None, der, checks
+            )
+        match_check = next((c for c in checks if "Match" in c.name), None)
+        assert match_check is not None
+        assert any("PKIX-constrained" in d for d in match_check.details)
+
+
+# ── _check_ehlo_domain: empty domain_token (lines 2513-2520) ─────────────────
+
+
+class TestCheckEhloDomainEmptyToken:
+    def test_ehlo_resp_with_no_domain_token_errors(self):
+        """Lines 2513-2520: an EHLO response whose first line is '250-' (no
+        trailing domain) yields an empty token after stripping the prefix and
+        must produce an ERROR check."""
+        smtp = MagicMock(spec=smtplib.SMTP)
+        smtp.ehlo_resp = b"250-\r\n250 STARTTLS"
+        checks: list = []
+        _check_ehlo_domain(smtp, checks)
+        assert checks[0].status == Status.ERROR
+        assert "does not include a domain name" in checks[0].details[0]
