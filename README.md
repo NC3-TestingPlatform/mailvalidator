@@ -403,7 +403,7 @@ export is tested by mocking Rich's `console.save_text`, `save_svg`, and
 
 1. Fork the repository and create a feature branch.
 2. Add or update tests — the project targets 100% unit test coverage.
-3. Run `pytest` and confirm all 652 tests pass before opening a pull request.
+3. Run `pytest` and confirm all tests pass before opening a pull request.
 4. Follow the existing docstring format (reStructuredText / docutils field lists).
 5. Use [conventional commits](https://www.conventionalcommits.org/):
    `fix:`, `feat:`, `refactor:`, `test:`, `docs:`, `chore:`
