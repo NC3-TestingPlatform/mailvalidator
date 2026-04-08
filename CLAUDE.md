@@ -113,7 +113,7 @@ Run these checks and update these files as needed — do not skip any step:
 pytest
 ```
 
-If the test count or statement count changed, update **all three** occurrences in `README.md`:
+If the test count or statement count changed, update **all two** occurrences in `README.md`:
 - Line ~17: badge `![Tests](https://img.shields.io/badge/tests-NNN%20passing-brightgreen)`
 - "The test suite has **NNN tests**…" paragraph (Running Tests section)
 
