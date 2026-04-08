@@ -86,10 +86,11 @@ def _checks_table(checks: list[CheckResult]) -> Table:
     tbl.add_column("Value / Details")
 
     for c in checks:
-        detail = c.value
         if c.details:
-            extra = "\n".join(c.details)
-            detail = f"{detail}\n{extra}".strip() if detail else extra
+            extra = "\n".join(f"[dim]{d}[/dim]" for d in c.details)
+            detail = f"{c.value}\n{extra}" if c.value else extra
+        else:
+            detail = c.value or ""
         tbl.add_row(c.name, _status_text(c.status), detail)
 
     return tbl
