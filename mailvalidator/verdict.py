@@ -202,6 +202,10 @@ def _format_verdict_text(check: CheckResult) -> str:
     * ``Improve`` — any other actionable status
 
     The first detail line is appended when available for additional context.
+    For ``TLS Versions`` with ``PHASE_OUT``/``INSUFFICIENT`` status the last
+    detail line (the "Disable: …" summary) is used instead, because the first
+    detail is a passing entry (e.g. "TLSv1.3 – accepted") and would be
+    misleading as the sole action description.
 
     :param check: Source check result.
     :type check: ~mailvalidator.models.CheckResult
@@ -218,7 +222,14 @@ def _format_verdict_text(check: CheckResult) -> str:
         prefix = "Improve"
 
     if check.details:
-        return f"{prefix} {check.name}: {check.details[0]}"
+        if check.name == "TLS Versions" and check.status in (
+            Status.PHASE_OUT,
+            Status.INSUFFICIENT,
+        ):
+            detail = check.details[-1]
+        else:
+            detail = check.details[0]
+        return f"{prefix} {check.name}: {detail}"
     if check.value:
         return f"{prefix} {check.name} [{check.value}]"
     return f"{prefix} {check.name}"

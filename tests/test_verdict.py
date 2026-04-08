@@ -236,6 +236,35 @@ class TestFormatVerdictText:
         assert "Detail line." in text
         assert "badval" not in text
 
+    def test_tls_versions_phase_out_uses_last_detail(self):
+        check = _check(
+            "TLS Versions",
+            Status.PHASE_OUT,
+            details=[
+                "  \u2714  TLSv1.3 \u2013 accepted",
+                "  \u2714  TLSv1.2 \u2013 accepted",
+                "  \u2193 phase-out  TLSv1.1 \u2013 accepted",
+                "Disable: TLSv1.1 \u2013 deprecated protocol(s) still accepted.",
+            ],
+        )
+        text = _format_verdict_text(check)
+        assert "Disable: TLSv1.1" in text
+        assert "TLSv1.3" not in text
+
+    def test_tls_versions_insufficient_uses_last_detail(self):
+        check = _check(
+            "TLS Versions",
+            Status.INSUFFICIENT,
+            details=[
+                "  \u2714  TLSv1.3 \u2013 accepted",
+                "  \u2193 TLSv1 \u2013 accepted",
+                "Disable: TLSv1 \u2013 deprecated protocol(s) still accepted.",
+            ],
+        )
+        text = _format_verdict_text(check)
+        assert "Disable: TLSv1" in text
+        assert "TLSv1.3" not in text
+
 
 # ---------------------------------------------------------------------------
 # _collect_checks
