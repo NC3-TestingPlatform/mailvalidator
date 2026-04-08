@@ -166,6 +166,13 @@ def _check_cipher(
             if _STATUS_RANK.get(st, 0) > _STATUS_RANK.get(ver_worst, 0):
                 ver_worst = st
 
+        if ver_worst in (Status.PHASE_OUT, Status.INSUFFICIENT):
+            phase_out_names = [c for c in ciphers if _classify_cipher(c) == Status.PHASE_OUT]
+            if phase_out_names:
+                detail_lines.append(
+                    f"Remove phase-out cipher(s): {', '.join(phase_out_names)}."
+                )
+
         checks.append(
             CheckResult(
                 name=f"Cipher Suites ({ver_label})",

@@ -267,6 +267,32 @@ class TestFormatVerdictText:
         assert "Disable: TLSv1" in text
         assert "TLSv1.3" not in text
 
+    def test_cipher_suites_phase_out_uses_last_detail(self):
+        check = _check(
+            "Cipher Suites (TLSv1.2)",
+            Status.PHASE_OUT,
+            details=[
+                "  \u2714 [GOOD] ECDHE-RSA-AES256-GCM-SHA384",
+                "  \u2193 [PHASE_OUT] AES256-GCM-SHA384",
+                "Remove phase-out cipher(s): AES256-GCM-SHA384.",
+            ],
+        )
+        text = _format_verdict_text(check)
+        assert "Remove phase-out cipher(s): AES256-GCM-SHA384." in text
+        assert "ECDHE-RSA-AES256-GCM-SHA384" not in text
+
+    def test_cipher_suites_insufficient_uses_last_detail(self):
+        check = _check(
+            "Cipher Suites (TLSv1.2)",
+            Status.INSUFFICIENT,
+            details=[
+                "  \u2717 [INSUFFICIENT] RC4-MD5",
+                "Remove phase-out cipher(s): RC4-MD5.",
+            ],
+        )
+        text = _format_verdict_text(check)
+        assert "Remove phase-out cipher(s): RC4-MD5." in text
+
 
 # ---------------------------------------------------------------------------
 # _collect_checks

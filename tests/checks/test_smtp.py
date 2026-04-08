@@ -738,6 +738,42 @@ class TestCheckCipherExtra:
         cipher_check = next(c for c in checks if "TLSv1.2" in c.name)
         assert cipher_check.status == Status.PHASE_OUT
 
+    def test_phase_out_appends_summary_line(self):
+        """When PHASE_OUT ciphers are present, a summary line is appended to details."""
+        checks: list = []
+        tls = make_tls()
+        mixed = ["ECDHE-RSA-AES256-GCM-SHA384", "AES256-SHA"]  # Good + Phase-out
+        with patch(
+            "mailvalidator.checks.smtp._enumerate_ciphers_for_version",
+            side_effect=lambda h, p, helo, sni, mn, mx, **kw: (
+                mixed if mn == ssl.TLSVersion.TLSv1_2 else []
+            ),
+        ):
+            _check_cipher(
+                "mail.example.com", 25, "mailvalidator.local", None, tls, checks
+            )
+        cipher_check = next(c for c in checks if "TLSv1.2" in c.name)
+        assert cipher_check.details[-1].startswith("Remove phase-out cipher(s):")
+        assert "AES256-SHA" in cipher_check.details[-1]
+
+    def test_all_good_ciphers_no_summary_line(self):
+        """When all ciphers are GOOD, no summary line is appended."""
+        checks: list = []
+        tls = make_tls()
+        good_only = ["ECDHE-RSA-AES256-GCM-SHA384", "ECDHE-RSA-AES128-GCM-SHA256"]
+        with patch(
+            "mailvalidator.checks.smtp._enumerate_ciphers_for_version",
+            side_effect=lambda h, p, helo, sni, mn, mx, **kw: (
+                good_only if mn == ssl.TLSVersion.TLSv1_2 else []
+            ),
+        ):
+            _check_cipher(
+                "mail.example.com", 25, "mailvalidator.local", None, tls, checks
+            )
+        cipher_check = next(c for c in checks if "TLSv1.2" in c.name)
+        assert cipher_check.status == Status.GOOD
+        assert not any("Remove phase-out" in d for d in cipher_check.details)
+
 
 # ── _check_cipher_order: no-data branch ──────────────────────────────────────
 

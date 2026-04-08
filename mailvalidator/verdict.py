@@ -326,9 +326,9 @@ def _format_verdict_text(check: CheckResult) -> str:
         prefix = "Improve"
 
     if check.details:
-        if check.name == "TLS Versions" and check.status in (
-            Status.PHASE_OUT,
-            Status.INSUFFICIENT,
+        if check.status in (Status.PHASE_OUT, Status.INSUFFICIENT) and (
+            check.name == "TLS Versions"
+            or check.name.startswith("Cipher Suites")
         ):
             detail = check.details[-1]
         else:
