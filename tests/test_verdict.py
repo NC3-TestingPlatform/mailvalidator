@@ -67,8 +67,8 @@ class TestLookupPriority:
     def test_exact_match_medium(self):
         assert _lookup_priority("BIMI Record") is VerdictSeverity.MEDIUM
 
-    def test_exact_match_none(self):
-        assert _lookup_priority("SMTP Connect") is None
+    def test_exact_match_smtp_connect_is_critical(self):
+        assert _lookup_priority("SMTP Connect") is VerdictSeverity.CRITICAL
 
     def test_prefix_match_cipher_suites(self):
         assert _lookup_priority("Cipher Suites (TLSv1.2)") is VerdictSeverity.HIGH
@@ -113,7 +113,6 @@ class TestLookupPriority:
 
     def test_all_informational_checks_resolve_none(self):
         informational = [
-            "SMTP Connect",
             "ESMTP Extensions",
             "VRFY Command",
             "TLS Compression",
@@ -414,9 +413,32 @@ class TestExtractVerdictActions:
         r = _report_with_checks(_check("Some Completely Unknown Check", Status.ERROR))
         assert extract_verdict_actions(r) == []
 
-    def test_explicitly_informational_skipped(self):
-        r = _report_with_checks(_check("SMTP Connect", Status.ERROR))
+    def test_smtp_connect_error_produces_critical(self):
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [_check("SMTP Connect", Status.ERROR, details=["timed out"])]
+        r.smtp = [smtp]
+        actions = extract_verdict_actions(r)
+        assert len(actions) == 1
+        assert actions[0].severity is VerdictSeverity.CRITICAL
+        assert actions[0].check_name == "SMTP Connect"
+
+    def test_smtp_connect_ok_not_in_verdict(self):
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [_check("SMTP Connect", Status.OK, value="29.8 ms")]
+        r.smtp = [smtp]
         assert extract_verdict_actions(r) == []
+
+    def test_policy_file_error_produces_high(self):
+        r = _empty_report()
+        mta = MTASTSResult(domain="example.com")
+        mta.checks = [_check("Policy File", Status.ERROR, details=["SSL cert mismatch"])]
+        r.mta_sts = mta
+        actions = extract_verdict_actions(r)
+        assert len(actions) == 1
+        assert actions[0].severity is VerdictSeverity.HIGH
+        assert actions[0].check_name == "Policy File"
 
     def test_tls_versions_insufficient_escalated_to_critical(self):
         r = _empty_report()

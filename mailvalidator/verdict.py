@@ -74,6 +74,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "Certificate Signature": VerdictSeverity.HIGH,
     "Certificate": VerdictSeverity.HIGH,
     # MTA-STS policy enforcement
+    "Policy File": VerdictSeverity.HIGH,   # cert mismatch / fetch failure breaks TLS enforcement
     "Policy Mode": VerdictSeverity.HIGH,
     # DMARC policy — p=none is a WARNING → HIGH; invalid policy is ERROR → CRITICAL
     "Policy (p=)": VerdictSeverity.HIGH,
@@ -101,7 +102,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "Duplicate Priorities": VerdictSeverity.MEDIUM,
     # ------------------------------------------------------------------ IGNORE
     # Informational checks — outcome is always noted, never actionable.
-    "SMTP Connect": None,
+    "SMTP Connect": VerdictSeverity.CRITICAL,  # ERROR = unreachable mail server; OK filtered by _IGNORE_STATUSES
     "ESMTP Extensions": None,
     "VRFY Command": None,
     "TLS Compression": None,
