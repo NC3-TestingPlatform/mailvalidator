@@ -5,8 +5,9 @@
 
 **mailvalidator** checks MX, DNSSEC, SPF, DMARC, DKIM, BIMI, TLSRPT, MTA-STS, SMTP
 diagnostics, deep TLS inspection, and 104 DNS blacklists in a single command.
-Results are colour-coded and graded against the
-[NCSC-NL IT Security Guidelines for Transport Layer Security (TLS)](https://www.ncsc.nl/en/transport-layer-security-tls/security-guidelines-for-transport-layer-security-2025-05).
+Results are colour-coded, TLS cipher suites are graded against the
+[NCSC-NL IT Security Guidelines for Transport Layer Security (TLS)](https://www.ncsc.nl/en/transport-layer-security-tls/security-guidelines-for-transport-layer-security-2025-05),
+and the overall configuration receives an **A+ – F security grade** based on a penalty-point model.
 
 ```
 $ mailvalidator check example.com
@@ -27,6 +28,7 @@ $ mailvalidator check example.com
 - [CLI Usage](#cli-usage)
 - [Python API](#python-api)
 - [TLS Grading](#tls-grading)
+- [Security Verdict & Grading](#security-verdict--grading)
 - [DNSBL Blacklist Check](#dnsbl-blacklist-check)
 - [Project Structure](#project-structure)
 - [Running Tests](#running-tests)
@@ -51,7 +53,7 @@ $ mailvalidator check example.com
 | **CAA**              | _(part of smtp)_          | RFC 8659: hierarchy walk; `issue` / `issuewild` tags checked independently; deny-all (`issue ";"`) surfaced; wildcard governance note when `issuewild` is absent; flags byte validation; `iodef` scheme validation (https:// or mailto: only)                                                                                               |
 | **DANE / TLSA**      | _(part of smtp)_          | RFC 6698 / RFC 7671: TLSA existence; SHA-256/SHA-512 fingerprint match; rollover scheme; matching type 0 discouraged (RFC 7671 §5.1); DNSSEC prerequisite noted                                                                                                                                                                             |
 | **Blacklist**        | `mailvalidator blacklist` | 104 DNSBL zones in parallel, RFC 5782 §2.1 compliant                                                                                                                                                                                                                                                                                        |
-| **Full Report**      | `mailvalidator check`     | All of the above in one command, plus a **Security Verdict** panel with prioritised action items |
+| **Full Report**      | `mailvalidator check`     | All of the above in one command, plus a **Security Verdict** panel with prioritised action items and an **A+ – F letter grade**                                                                                                                                                                                                             |
 
 ### SMTP check (RFC 5321)
 
@@ -257,6 +259,47 @@ Beyond cipher grading, the SMTP check also verifies:
 - Certificate trust chain, public key strength, signature algorithm, domain match, and expiry
 - CAA records (RFC 8659)
 - DANE/TLSA records with fingerprint verification and rollover scheme assessment
+
+---
+
+## Security Verdict & Grading
+
+Every `mailvalidator check` run ends with a **Security Verdict** panel that
+lists prioritised action items and assigns a letter grade to the overall mail
+server configuration.
+
+### How the grade is calculated
+
+The grading uses a **penalty-point model**: a perfect configuration starts at
+**0 points** (grade A+) and accumulates points as issues are found.
+
+| Severity | Penalty |
+| -------- | ------- |
+| CRITICAL | 25 pts  |
+| HIGH     | 10 pts  |
+| MEDIUM   | 3 pts   |
+
+The total penalty is mapped to a letter grade:
+
+| Penalty points | Grade  |
+| -------------- | ------ |
+| 0              | **A+** |
+| 1 – 10         | **A**  |
+| 11 – 20        | **B**  |
+| 21 – 30        | **C**  |
+| 31 – 40        | **D**  |
+| > 40           | **F**  |
+
+### Severity levels
+
+| Severity     | Examples                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
+| **CRITICAL** | Missing SPF/DMARC/MX record, open relay, untrusted/expired certificate, server unreachable, blacklisted IP   |
+| **HIGH**     | Missing STARTTLS, missing DKIM, weak/deprecated TLS versions or ciphers, PTR mismatch, misconfigured MTA-STS |
+| **MEDIUM**   | Missing BIMI record, no DNSSEC, missing CAA records, missing DANE/TLSA                                       |
+
+Checks that are informational only (e.g. DMARC reporting options, SPF version
+tag, subdomain policy) never generate an action item regardless of their value.
 
 ---
 
