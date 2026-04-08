@@ -65,9 +65,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     # Important security gaps that should be addressed soon.
     "DKIM Base Node": VerdictSeverity.HIGH,
     "STARTTLS": VerdictSeverity.HIGH,
-    "Reverse DNS (PTR)": VerdictSeverity.HIGH,
     "MTA-STS DNS Record": VerdictSeverity.HIGH,
-    "TLSRPT Record": VerdictSeverity.HIGH,
     # Certificate checks (more-specific keys above win over "Certificate" catch-all)
     "Certificate Public Key": VerdictSeverity.HIGH,
     "Certificate Domain Match": VerdictSeverity.HIGH,
@@ -82,9 +80,6 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "Cipher Suites": VerdictSeverity.HIGH,
     "Cipher Order": VerdictSeverity.HIGH,
     "TLS Versions": VerdictSeverity.HIGH,
-    # Misconfigured SMTP protocol presentation
-    "Banner FQDN": VerdictSeverity.HIGH,
-    "EHLO Domain": VerdictSeverity.HIGH,
     # SPF policy / lookup issues
     "SPF Policy": VerdictSeverity.HIGH,
     "DNS Lookup Count": VerdictSeverity.HIGH,
@@ -92,7 +87,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     # DANE certificate mismatch is actionable when DANE is deployed
     "DANE – Certificate Match": VerdictSeverity.HIGH,
     # ------------------------------------------------------------------ MEDIUM
-    # Optional enhancements — good to have but not urgent.
+    # Good to have but not urgent; operational/compliance rather than security gaps.
     "BIMI Record": VerdictSeverity.MEDIUM,
     "CAA Records": VerdictSeverity.MEDIUM,
     "DANE – TLSA Existence": VerdictSeverity.MEDIUM,
@@ -100,6 +95,12 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "DANE – Rollover Scheme": VerdictSeverity.MEDIUM,
     "DNSSEC": VerdictSeverity.MEDIUM,
     "Duplicate Priorities": VerdictSeverity.MEDIUM,
+    # RFC presentation compliance — misconfigured but no direct security impact
+    "Banner FQDN": VerdictSeverity.MEDIUM,
+    "EHLO Domain": VerdictSeverity.MEDIUM,
+    # Reporting/deliverability rather than active attack-surface issues
+    "TLSRPT Record": VerdictSeverity.MEDIUM,
+    "Reverse DNS (PTR)": VerdictSeverity.MEDIUM,
     # ------------------------------------------------------------------ IGNORE
     # Informational checks — outcome is always noted, never actionable.
     "SMTP Connect": VerdictSeverity.CRITICAL,  # ERROR = unreachable mail server; OK filtered by _IGNORE_STATUSES
