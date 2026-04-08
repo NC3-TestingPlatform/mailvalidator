@@ -9,7 +9,7 @@ write to the same output stream.
 from __future__ import annotations
 
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -73,7 +73,14 @@ def _checks_table(checks: list[CheckResult]) -> Table:
     :returns: A formatted Rich table ready to print.
     :rtype: ~rich.table.Table
     """
-    tbl = Table(show_header=True, header_style="bold blue", expand=True, padding=(0, 1))
+    tbl = Table(
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold white",
+        border_style="dim",
+        expand=False,
+        padding=(0, 1),
+    )
     tbl.add_column("Check", style="bold")
     tbl.add_column("Status", justify="center")
     tbl.add_column("Value / Details")
@@ -144,12 +151,23 @@ def print_mx(result: MXResult) -> None:
     :param result: MX check result to display.
     :type result: ~mailvalidator.models.MXResult
     """
-    console.print(Panel(f"[bold]MX Records[/bold] – {result.domain}", style="blue"))
+    table = _checks_table(result.checks)
     if result.authoritative_ns:
-        console.print(
-            f"  [dim]Authoritative NS:[/dim] {', '.join(result.authoritative_ns)}"
+        ns_line = Text(
+            f"  Authoritative NS: {', '.join(result.authoritative_ns)}",
+            style="dim",
         )
-    console.print(_checks_table(result.checks))
+        content = Group(ns_line, table)
+    else:
+        content = Group(table)
+    console.print(
+        Panel(
+            content,
+            title=f"[bold]MX Records[/bold] – {result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
+    )
 
 
 _SMTP_SECTIONS: list[tuple[str, str]] = [
@@ -163,18 +181,14 @@ _SMTP_SECTIONS: list[tuple[str, str]] = [
 def print_smtp(results: list[SMTPDiagResult]) -> None:
     """Render SMTP diagnostic results for one or more mail servers.
 
-    Checks are grouped into four sections (Protocol, TLS, Certificate, DNS)
-    when section metadata is present.  Falls back to a single flat table for
-    results produced without section tags.
+    Checks are grouped into four inner panels (Protocol, TLS, Certificate, DNS)
+    when section metadata is present, all nested inside an outer server panel.
+    Falls back to a single flat table for results produced without section tags.
 
     :param results: List of per-server SMTP diagnostic results.
     :type results: list[~mailvalidator.models.SMTPDiagResult]
     """
     for r in results:
-        console.print(
-            Panel(f"[bold]SMTP Diagnostics[/bold] – {r.host}:{r.port}", style="blue")
-        )
-
         # Group by section
         sectioned: dict[str, list[CheckResult]] = {}
         unsectioned: list[CheckResult] = []
@@ -185,22 +199,46 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
                 unsectioned.append(cr)
 
         if sectioned:
+            inner_panels: list[Panel] = []
             for section_name, style in _SMTP_SECTIONS:
                 group = sectioned.get(section_name, [])
                 if not group:
                     continue
-                console.print(Panel(f"[bold]{section_name}[/bold]", style=style, expand=True))
-                console.print(_checks_table(group))
+                inner_panels.append(
+                    Panel(
+                        _checks_table(group),
+                        title=f"[bold]{section_name}[/bold]",
+                        style=style,
+                        padding=(0, 1),
+                    )
+                )
             # Emit any checks with unrecognised section names
+            known = {s for s, _ in _SMTP_SECTIONS}
             for sname, group in sectioned.items():
-                if sname not in {s for s, _ in _SMTP_SECTIONS}:
-                    console.print(Panel(f"[bold]{sname}[/bold]", style="white", expand=True))
-                    console.print(_checks_table(group))
+                if sname not in known:
+                    inner_panels.append(
+                        Panel(
+                            _checks_table(group),
+                            title=f"[bold]{sname}[/bold]",
+                            style="white",
+                            padding=(0, 1),
+                        )
+                    )
             if unsectioned:
-                console.print(_checks_table(unsectioned))
+                inner_panels.append(_checks_table(unsectioned))
+            content = Group(*inner_panels)
         else:
             # No section metadata: flat table (backward-compatible)
-            console.print(_checks_table(r.checks))
+            content = Group(_checks_table(r.checks))
+
+        console.print(
+            Panel(
+                content,
+                title=f"[bold]SMTP Diagnostics[/bold] – {r.host}:{r.port}",
+                style="blue",
+                padding=(0, 1),
+            )
+        )
 
 
 def print_dkim(result: DKIMResult) -> None:
@@ -210,9 +248,13 @@ def print_dkim(result: DKIMResult) -> None:
     :type result: ~mailvalidator.models.DKIMResult
     """
     console.print(
-        Panel(f"[bold]DKIM[/bold] – _domainkey.{result.domain}", style="blue")
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]DKIM[/bold] – _domainkey.{result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
     )
-    console.print(_checks_table(result.checks))
 
 
 def print_bimi(result: BIMIResult) -> None:
@@ -222,9 +264,13 @@ def print_bimi(result: BIMIResult) -> None:
     :type result: ~mailvalidator.models.BIMIResult
     """
     console.print(
-        Panel(f"[bold]BIMI[/bold] – default._bimi.{result.domain}", style="blue")
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]BIMI[/bold] – default._bimi.{result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
     )
-    console.print(_checks_table(result.checks))
 
 
 def print_tlsrpt(result: TLSRPTResult) -> None:
@@ -234,9 +280,13 @@ def print_tlsrpt(result: TLSRPTResult) -> None:
     :type result: ~mailvalidator.models.TLSRPTResult
     """
     console.print(
-        Panel(f"[bold]TLSRPT[/bold] – _smtp._tls.{result.domain}", style="blue")
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]TLSRPT[/bold] – _smtp._tls.{result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
     )
-    console.print(_checks_table(result.checks))
 
 
 def print_blacklist(result: BlacklistResult) -> None:
@@ -245,16 +295,19 @@ def print_blacklist(result: BlacklistResult) -> None:
     :param result: Blacklist check result to display.
     :type result: ~mailvalidator.models.BlacklistResult
     """
-    console.print(
-        Panel(f"[bold]Blacklist / Blocklist Check[/bold] – {result.ip}", style="blue")
-    )
-    summary = f"Checked {result.total_checked} lists"
+    summary = f"  Checked {result.total_checked} lists"
     if result.listed_on:
         summary += f" | [bold red]Listed on {len(result.listed_on)}[/bold red]"
     else:
         summary += " | [bold green]Clean[/bold green]"
-    console.print(f"  {summary}")
-    console.print(_checks_table(result.checks))
+    console.print(
+        Panel(
+            Group(Text.from_markup(summary), _checks_table(result.checks)),
+            title=f"[bold]Blacklist / Blocklist Check[/bold] – {result.ip}",
+            style="blue",
+            padding=(0, 1),
+        )
+    )
 
 
 def print_spf(result: SPFResult) -> None:
@@ -263,8 +316,14 @@ def print_spf(result: SPFResult) -> None:
     :param result: SPF check result to display.
     :type result: ~mailvalidator.models.SPFResult
     """
-    console.print(Panel(f"[bold]SPF[/bold] – {result.domain}", style="blue"))
-    console.print(_checks_table(result.checks))
+    console.print(
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]SPF[/bold] – {result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
+    )
 
 
 def print_dmarc(result: DMARCResult) -> None:
@@ -273,8 +332,14 @@ def print_dmarc(result: DMARCResult) -> None:
     :param result: DMARC check result to display.
     :type result: ~mailvalidator.models.DMARCResult
     """
-    console.print(Panel(f"[bold]DMARC[/bold] – _dmarc.{result.domain}", style="blue"))
-    console.print(_checks_table(result.checks))
+    console.print(
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]DMARC[/bold] – _dmarc.{result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
+    )
 
 
 def print_mta_sts(result: MTASTSResult) -> None:
@@ -283,8 +348,14 @@ def print_mta_sts(result: MTASTSResult) -> None:
     :param result: MTA-STS check result to display.
     :type result: ~mailvalidator.models.MTASTSResult
     """
-    console.print(Panel(f"[bold]MTA-STS[/bold] – {result.domain}", style="blue"))
-    console.print(_checks_table(result.checks))
+    console.print(
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]MTA-STS[/bold] – {result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
+    )
 
 
 def print_dnssec_domain(result: DNSSECResult) -> None:
@@ -294,9 +365,13 @@ def print_dnssec_domain(result: DNSSECResult) -> None:
     :type result: ~mailvalidator.models.DNSSECResult
     """
     console.print(
-        Panel(f"[bold]DNSSEC – Email Domain[/bold] – {result.domain}", style="blue")
+        Panel(
+            _checks_table(result.checks),
+            title=f"[bold]DNSSEC – Email Domain[/bold] – {result.domain}",
+            style="blue",
+            padding=(0, 1),
+        )
     )
-    console.print(_checks_table(result.checks))
 
 
 def print_dnssec_mx(result: DNSSECResult) -> None:
@@ -307,11 +382,12 @@ def print_dnssec_mx(result: DNSSECResult) -> None:
     """
     console.print(
         Panel(
-            f"[bold]DNSSEC – Mail Server Domain(s)[/bold] – {result.domain}",
+            _checks_table(result.checks),
+            title=f"[bold]DNSSEC – Mail Server Domain(s)[/bold] – {result.domain}",
             style="blue",
+            padding=(0, 1),
         )
     )
-    console.print(_checks_table(result.checks))
 
 
 _GRADE_STYLE: dict[str, str] = {
