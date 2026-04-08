@@ -8,6 +8,7 @@ write to the same output stream.
 
 from __future__ import annotations
 
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -313,33 +314,47 @@ def print_dnssec_mx(result: DNSSECResult) -> None:
     console.print(_checks_table(result.checks))
 
 
-_GRADE_STYLE: dict[str, tuple[str, str]] = {
-    "A+": ("bold bright_green", "A+"),
-    "A": ("bold green", "A"),
-    "B": ("bold yellow", "B"),
-    "C": ("bold dark_orange", "C"),
-    "D": ("bold orange_red1", "D"),
-    "F": ("bold red", "F"),
+_GRADE_STYLE: dict[str, str] = {
+    "A+": "bold bright_green",
+    "A": "bold green",
+    "B": "bold yellow",
+    "C": "bold yellow",
+    "D": "bold red",
+    "F": "bold bright_red",
+}
+
+_SEVERITY_STYLE: dict[VerdictSeverity, str] = {
+    VerdictSeverity.CRITICAL: "bold red",
+    VerdictSeverity.HIGH: "bold yellow",
+    VerdictSeverity.MEDIUM: "bold cyan",
 }
 
 
 def _grade_text(grade: Grade) -> Text:
-    """Return a styled Rich :class:`~rich.text.Text` for *grade*.
+    """Return a styled Rich :class:`~rich.text.Text` for the verdict panel title.
+
+    Assembles "Security Verdict", the letter grade (coloured by grade), and
+    the rationale into a single :class:`~rich.text.Text`.
 
     :param grade: Grade produced by :func:`~mailvalidator.verdict.calculate_grade`.
-    :returns: Styled text showing the letter grade.
+    :returns: Styled text showing the letter grade and rationale.
     :rtype: ~rich.text.Text
     """
-    style, label = _GRADE_STYLE.get(grade.letter, ("bold magenta", grade.letter))
-    return Text(label, style=style)
+    style = _GRADE_STYLE.get(grade.letter, "bold white")
+    return Text.assemble(
+        ("Security Verdict  ", "bold white"),
+        (grade.letter, style),
+        ("  ", ""),
+        (grade.rationale, "dim"),
+    )
 
 
 def print_verdict(actions: list[VerdictAction], grade: Grade | None = None) -> None:
     """Render the prioritised security verdict panel to the terminal.
 
-    Displays a colour-coded table of actionable items sorted from most to
-    least urgent (``CRITICAL`` → ``HIGH`` → ``MEDIUM``).  When *grade* is
-    provided the panel header also shows the letter grade and rationale.
+    Displays a colour-coded table of actionable items inside a Rich panel
+    whose border reflects the overall grade.  Items are sorted from most to
+    least urgent (``CRITICAL`` → ``HIGH`` → ``MEDIUM``).
     Called by :func:`print_full_report`.
 
     :param actions: Deduplicated, severity-sorted action list from
@@ -349,33 +364,36 @@ def print_verdict(actions: list[VerdictAction], grade: Grade | None = None) -> N
         :func:`~mailvalidator.verdict.calculate_grade`.
     :type grade: ~mailvalidator.verdict.Grade or None
     """
-    _SEV_STYLE: dict[VerdictSeverity, tuple[str, str]] = {
-        VerdictSeverity.CRITICAL: ("bold red", "✘ CRITICAL"),
-        VerdictSeverity.HIGH: ("bold yellow", "⚠ HIGH"),
-        VerdictSeverity.MEDIUM: ("bold cyan", "· MEDIUM"),
-    }
-
+    border_colour = "white"
+    title: Text | str = "Security Verdict"
     if grade is not None:
-        grade_t = _grade_text(grade)
-        header = Text.assemble(
-            Text("Security Verdict", style="bold red"),
-            Text(" – Grade: "),
-            grade_t,
-            Text(f"  ({grade.rationale})", style="dim"),
-        )
-    else:
-        header = Text("Security Verdict – Prioritised Actions", style="bold red")
+        title = _grade_text(grade)
+        border_colour = _GRADE_STYLE.get(grade.letter, "bold white").split()[-1]
 
-    tbl = Table(show_header=True, header_style="bold red", expand=True, padding=(0, 1))
-    tbl.add_column("Priority", justify="center", no_wrap=True)
+    tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold white", expand=True)
+    tbl.add_column("Priority", style="bold", min_width=10, no_wrap=True)
     tbl.add_column("Action")
-    for action in actions:
-        style, label = _SEV_STYLE[action.severity]
-        tbl.add_row(Text(label, style=style), action.text)
 
-    console.print(Panel(header, style="red"))
-    if actions:
-        console.print(tbl)
+    for action in actions:
+        sev_style = _SEVERITY_STYLE[action.severity]
+        tbl.add_row(Text(action.severity.value, style=sev_style), action.text)
+
+    if not actions:
+        tbl.add_row(
+            Text("PASS", style="bold green"),
+            "No issues found — mail server configuration is excellent.",
+        )
+
+    console.print(
+        Panel(
+            tbl,
+            title=title,
+            border_style=border_colour,
+            expand=False,
+            padding=(0, 1),
+        )
+    )
+    console.print()
 
 
 def print_full_report(report: FullReport) -> None:

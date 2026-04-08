@@ -529,7 +529,7 @@ class TestGradeText:
         for letter in ("A+", "A", "B", "C", "D", "F"):
             g = Grade(letter=letter, penalty=0, rationale="")
             t = _grade_text(g)
-            assert t.plain == letter
+            assert letter in t.plain
 
     def test_unknown_grade_falls_back(self):
         g = Grade(letter="Z", penalty=0, rationale="")

@@ -388,7 +388,7 @@ pytest tests/checks/test_smtp.py -v
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **652 tests** and achieves **100% coverage** (1 893
+The test suite has **652 tests** and achieves **100% coverage** (1 896
 statements) across all modules. Coverage reporting is pre-configured in
 `pyproject.toml` — no extra flags needed.
 
