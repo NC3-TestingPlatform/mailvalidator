@@ -26,8 +26,10 @@ from mailvalidator.verdict import (
     _collect_checks,
     _context_severity,
     _deduplicate_actions,
+    _deprecated_tls_version_labels,
     _format_verdict_text,
     _lookup_priority,
+    _version_label_from_name,
     calculate_grade,
     extract_verdict_actions,
 )
@@ -564,6 +566,142 @@ class TestExtractVerdictActions:
         r.blacklist = bl
         actions = extract_verdict_actions(r)
         assert any(a.check_name == "Blacklist Status" for a in actions)
+
+    def test_cipher_suites_suppressed_for_deprecated_tls_version(self):
+        # When TLS Versions flags TLSv1 for removal, Cipher Suites (TLSv1)
+        # should not appear as a separate action item.
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["  ↓ phase-out  TLSv1 – accepted",
+                         "Disable: TLSv1 – deprecated protocol(s) still accepted."],
+            ),
+            _check("Cipher Suites (TLSv1)", Status.PHASE_OUT),
+        ]
+        r.smtp = [smtp]
+        actions = extract_verdict_actions(r)
+        check_names = [a.check_name for a in actions]
+        assert "TLS Versions" in check_names
+        assert "Cipher Suites (TLSv1)" not in check_names
+
+    def test_cipher_order_suppressed_for_deprecated_tls_version(self):
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1.1, TLSv1 – deprecated protocol(s) still accepted."],
+            ),
+            _check("Cipher Order – Prescribed Ordering (TLSv1)", Status.WARNING),
+            _check("Cipher Order – Prescribed Ordering (TLSv1.1)", Status.WARNING),
+        ]
+        r.smtp = [smtp]
+        actions = extract_verdict_actions(r)
+        check_names = [a.check_name for a in actions]
+        assert "Cipher Order – Prescribed Ordering (TLSv1)" not in check_names
+        assert "Cipher Order – Prescribed Ordering (TLSv1.1)" not in check_names
+
+    def test_cipher_suites_kept_for_non_deprecated_tls_version(self):
+        # TLSv1.2 cipher issues should still appear even when TLSv1 is deprecated.
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1 – deprecated protocol(s) still accepted."],
+            ),
+            _check("Cipher Suites (TLSv1.2)", Status.PHASE_OUT),
+        ]
+        r.smtp = [smtp]
+        actions = extract_verdict_actions(r)
+        check_names = [a.check_name for a in actions]
+        assert "Cipher Suites (TLSv1.2)" in check_names
+
+    def test_cipher_suites_kept_when_no_tls_version_deprecation(self):
+        # No TLS Versions issue → cipher checks are shown normally.
+        r = _empty_report()
+        smtp = SMTPDiagResult(host="mx.example.com", port=25)
+        smtp.checks = [_check("Cipher Suites (TLSv1)", Status.PHASE_OUT)]
+        r.smtp = [smtp]
+        actions = extract_verdict_actions(r)
+        assert any(a.check_name == "Cipher Suites (TLSv1)" for a in actions)
+
+
+class TestDeprecatedTlsVersionLabels:
+    def test_extracts_single_version(self):
+        checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1 – deprecated protocol(s) still accepted."],
+            )
+        ]
+        assert _deprecated_tls_version_labels(checks) == frozenset({"TLSv1"})
+
+    def test_extracts_multiple_versions(self):
+        checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1.1, TLSv1 – deprecated protocol(s) still accepted."],
+            )
+        ]
+        result = _deprecated_tls_version_labels(checks)
+        assert result == frozenset({"TLSv1", "TLSv1.1"})
+
+    def test_extracts_from_insufficient_status(self):
+        checks = [
+            _check(
+                "TLS Versions",
+                Status.INSUFFICIENT,
+                details=["CRITICAL – disable immediately: TLSv1 – insecure protocol(s) accepted."],
+            )
+        ]
+        assert "TLSv1" in _deprecated_tls_version_labels(checks)
+
+    def test_ignores_passing_tls_versions_check(self):
+        checks = [_check("TLS Versions", Status.OK)]
+        assert _deprecated_tls_version_labels(checks) == frozenset()
+
+    def test_ignores_non_tls_versions_checks(self):
+        checks = [
+            _check(
+                "Cipher Suites (TLSv1)",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1 – deprecated protocol(s) still accepted."],
+            )
+        ]
+        assert _deprecated_tls_version_labels(checks) == frozenset()
+
+    def test_does_not_include_tls12_or_tls13(self):
+        checks = [
+            _check(
+                "TLS Versions",
+                Status.PHASE_OUT,
+                details=["Disable: TLSv1.2 – deprecated protocol(s) still accepted."],
+            )
+        ]
+        # TLSv1.2 is not in _PHASE_OUT_TLS_VERSIONS so it should be ignored
+        assert _deprecated_tls_version_labels(checks) == frozenset()
+
+
+class TestVersionLabelFromName:
+    def test_cipher_suites_label(self):
+        assert _version_label_from_name("Cipher Suites (TLSv1.2)") == "TLSv1.2"
+
+    def test_cipher_order_label(self):
+        assert _version_label_from_name("Cipher Order – Prescribed Ordering (TLSv1)") == "TLSv1"
+
+    def test_no_label(self):
+        assert _version_label_from_name("TLS Versions") is None
+
+    def test_name_without_parens(self):
+        assert _version_label_from_name("SPF Record") is None
 
 
 # ---------------------------------------------------------------------------

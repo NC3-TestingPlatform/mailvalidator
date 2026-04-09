@@ -340,6 +340,58 @@ def _format_verdict_text(check: CheckResult) -> str:
     return f"{prefix} {check.name}"
 
 
+_PHASE_OUT_TLS_VERSIONS: frozenset[str] = frozenset({"TLSv1", "TLSv1.1"})
+
+
+def _deprecated_tls_version_labels(checks: list[CheckResult]) -> frozenset[str]:
+    """Return version labels that are flagged for deprecation in *checks*.
+
+    Scans all ``TLS Versions`` check results with ``PHASE_OUT`` or
+    ``INSUFFICIENT`` status and extracts the version labels listed on
+    ``"Disable: …"`` or ``"CRITICAL – disable immediately: …"`` detail lines.
+
+    Only labels in :data:`_PHASE_OUT_TLS_VERSIONS` (``TLSv1``, ``TLSv1.1``)
+    are ever returned — TLS 1.2 and 1.3 are never deprecated.
+
+    :param checks: Flat list of all check results.
+    :type checks: list[~mailvalidator.models.CheckResult]
+    :returns: Set of deprecated version label strings, e.g. ``{"TLSv1", "TLSv1.1"}``.
+    :rtype: frozenset[str]
+    """
+    deprecated: set[str] = set()
+    for check in checks:
+        if check.name != "TLS Versions":
+            continue
+        if check.status not in (Status.PHASE_OUT, Status.INSUFFICIENT):
+            continue
+        for detail in check.details:
+            for prefix in ("Disable: ", "CRITICAL – disable immediately: "):
+                if detail.startswith(prefix):
+                    versions_part = detail[len(prefix):].split(" – ")[0]
+                    for label in versions_part.split(", "):
+                        label = label.strip()
+                        if label in _PHASE_OUT_TLS_VERSIONS:
+                            deprecated.add(label)
+    return frozenset(deprecated)
+
+
+def _version_label_from_name(name: str) -> str | None:
+    """Extract the TLS version label from the trailing ``(…)`` of a check name.
+
+    Returns ``None`` when the name does not end with a parenthesised label.
+
+    :param name: Check name such as ``"Cipher Suites (TLSv1.2)"``.
+    :type name: str
+    :returns: Version string (e.g. ``"TLSv1.2"``) or ``None``.
+    :rtype: str or None
+    """
+    if name.endswith(")"):
+        start = name.rfind("(")
+        if start != -1:
+            return name[start + 1 : -1]
+    return None
+
+
 def _collect_checks(report: FullReport) -> list[CheckResult]:
     """Collect all :class:`~mailvalidator.models.CheckResult` items from *report*.
 
@@ -412,9 +464,20 @@ def extract_verdict_actions(report: FullReport) -> list[VerdictAction]:
     """
     actions: list[VerdictAction] = []
 
-    for check in _collect_checks(report):
+    all_checks = _collect_checks(report)
+    deprecated_tls = _deprecated_tls_version_labels(all_checks)
+
+    for check in all_checks:
         if check.status in _IGNORE_STATUSES:
             continue
+
+        # Suppress cipher-suite and cipher-order issues for TLS versions that
+        # are already flagged for removal — disabling the version subsumes all
+        # cipher concerns for it and avoids redundant action items.
+        if deprecated_tls and check.name.startswith(("Cipher Suites (", "Cipher Order")):
+            ver = _version_label_from_name(check.name)
+            if ver is not None and ver in deprecated_tls:
+                continue
 
         base_sev = _lookup_priority(check.name)
         if base_sev is None:
