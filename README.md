@@ -141,6 +141,9 @@ mailvalidator check example.com --smtp-port 587
 mailvalidator check example.com --output report.txt
 mailvalidator check example.com --output report.svg
 mailvalidator check example.com --output report.html
+
+# Output results as JSON (machine-readable)
+mailvalidator check example.com --json
 ```
 
 ### Individual checks
@@ -162,6 +165,10 @@ mailvalidator smtp mail.example.com --port 587
 # Blacklist check
 mailvalidator blacklist 203.0.113.42
 mailvalidator blacklist 203.0.113.42 --workers 100
+
+# All sub-commands support --json for machine-readable output
+mailvalidator spf example.com --json
+mailvalidator smtp mail.example.com --json
 ```
 
 ### Version
