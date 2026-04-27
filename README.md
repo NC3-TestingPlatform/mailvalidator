@@ -97,7 +97,7 @@ DANE/TLSA).
 - [`rich`](https://github.com/Textualize/rich) ≥ 13.7
 - [`typer`](https://typer.tiangolo.com/) ≥ 0.12
 - [`cryptography`](https://cryptography.io/) ≥ 42
-- [`chainvalidator`](https://github.com/t0kubetsu/chainvalidator) (local dependency — see installation)
+- [`chainvalidator`](https://github.com/NC3-TestingPlatform/chainvalidator) (local dependency — see installation)
 
 ---
 
@@ -106,7 +106,7 @@ DANE/TLSA).
 **From source (recommended):**
 
 ```bash
-git clone --recurse-submodules https://github.com/t0kubetsu/mailvalidator.git
+git clone --recurse-submodules https://github.com/NC3-TestingPlatform/mailvalidator.git
 cd mailvalidator
 python -m venv .venv
 source .venv/bin/activate
