@@ -64,10 +64,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/t0kubetsu/mailvalidator"
-Repository = "https://github.com/t0kubetsu/mailvalidator"
-Issues = "https://github.com/t0kubetsu/mailvalidator/issues"
-# Changelog      = "https://github.com/t0kubetsu/mailvalidator/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/NC3-TestingPlatform/mailvalidator"
+Repository = "https://github.com/NC3-TestingPlatform/mailvalidator"
+Issues = "https://github.com/NC3-TestingPlatform/mailvalidator/issues"
+# Changelog      = "https://github.com/NC3-TestingPlatform/mailvalidator/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mailvalidator = "mailvalidator.cli:app"
