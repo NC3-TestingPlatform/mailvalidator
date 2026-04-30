@@ -45,7 +45,7 @@ Part of the [NC3-TestingPlatform](https://github.com/NC3-TestingPlatform).
 | **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection                                                                                                                                                                                                                                                                              |
 | **DNSSEC**           | `mailvalidator dnssec`    | Chain-of-trust validation (Trust Anchor → `.` → TLD → domain) for the email address domain and each MX host domain; CNAME chain following; DANE prerequisite annotation (RFC 7671)                                                                                                                                                          |
 | **SMTP Diagnostics** | `mailvalidator smtp`      | See [SMTP check details](#smtp-check-rfc-5321) below                                                                                                                                                                                                                                                                                        |
-| **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry                                                                                                                            |
+| **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry; **PQC readiness** (ML-KEM hybrid group detection, CNSA 2.0 / BSI TR-02102-2)                                            |
 | **SPF**              | `mailvalidator spf`       | Record lookup; `all`-qualifier grading; recursive `include:`/`redirect=` resolution with per-branch visited tracking; RFC 7208 §4.6.4 DNS lookup limit (10) and void lookup limit (2); `a/cidr` and `mx/cidr` mechanism counting; `include:` qualifier surfacing; nested `+all` detection; `exp=` modifier noted; `ptr` deprecation warning |
 | **DMARC**            | `mailvalidator dmarc`     | Full RFC 7489 validation: policy grading, sp, pct range, adkim/aspf, fo, ri, rua/ruf scheme + mailto syntax + external destination verification (§7.1)                                                                                                                                                                                      |
 | **DKIM**             | `mailvalidator dkim`      | Base-node (`_domainkey.<domain>`) RFC 2308 existence check                                                                                                                                                                                                                                                                                  |
@@ -68,9 +68,9 @@ prepended to the results.
 
 Results are grouped into four colour-coded panels: **Protocol** (connection,
 banner, EHLO, extensions, STARTTLS, VRFY, open relay), **TLS** (version
-probing, ciphers, key exchange, compression, renegotiation), **Certificate**
-(trust chain, public key, SAN/domain match, expiry), and **DNS** (PTR, CAA,
-DANE/TLSA).
+probing, ciphers, key exchange, compression, renegotiation, PQC readiness),
+**Certificate** (trust chain, public key, SAN/domain match, expiry), and
+**DNS** (PTR, CAA, DANE/TLSA).
 
 | Sub-check                | RFC reference                          | What is verified                                                                         |
 | ------------------------ | -------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -88,6 +88,7 @@ DANE/TLSA).
 | **Key exchange**         | NCSC-NL TLS guidelines                 | ECDHE curve and DHE group strength                                                       |
 | **TLS compression**      | CVE-2012-4929                          | Deflate/zlib compression enables the CRIME attack                                        |
 | **Secure renegotiation** | RFC 5746                               | Renegotiation Info extension                                                             |
+| **PQC key exchange**     | NSA CNSA 2.0, BSI TR-02102-2, NIST FIPS 203 | ML-KEM hybrid group (X25519MLKEM768 / SecP256r1MLKEM768 / SecP384r1MLKEM1024) detection; requires OpenSSL ≥ 3.0 on the scanning host |
 | **Certificate**          | RFC 5280, RFC 6125                     | Trust chain, public key strength, signature algorithm, SAN/CN domain match, expiry       |
 | **CAA records**          | RFC 8659                               | Issue/issuewild/iodef tags; flags byte; hierarchy walk                                   |
 | **DANE / TLSA**          | RFC 6698, RFC 7671                     | TLSA existence, fingerprint verification, rollover scheme                                |
@@ -102,6 +103,8 @@ DANE/TLSA).
 - [`typer`](https://typer.tiangolo.com/) ≥ 0.12
 - [`cryptography`](https://cryptography.io/) ≥ 42
 - [`chainvalidator`](https://github.com/NC3-TestingPlatform/chainvalidator) (local dependency — see installation)
+- [`quantumvalidator`](https://github.com/NC3-TestingPlatform/quantumvalidator) (local dependency — see installation)
+- `openssl` ≥ 3.0 on PATH (for the PQC key exchange probe; probe skipped with `INFO` status if absent)
 
 ---
 
@@ -119,8 +122,8 @@ pip install -e ".[dev]"   # installs the CLI + all dev/test dependencies
 
 The `mailvalidator` command is then available in your shell.
 
-> **Note:** `--recurse-submodules` is required — `vendor/chainvalidator` is a
-> git submodule and will be missing without it.
+> **Note:** `--recurse-submodules` is required — `vendor/chainvalidator` and
+> `vendor/quantumvalidator` are git submodules and will be missing without it.
 
 ---
 
@@ -399,7 +402,7 @@ pytest tests/checks/test_smtp.py -v
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **697 tests** and achieves **100% coverage** (2 010
+The test suite has **697 tests** and achieves **100% coverage** (2 007
 statements) across all modules. Coverage reporting is pre-configured in
 `pyproject.toml` — no extra flags needed.
 

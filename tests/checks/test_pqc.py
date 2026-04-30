@@ -96,7 +96,7 @@ class TestCheckPqcSafe:
         assert cr.name == "PQC Key Exchange"
         assert cr.status == Status.GOOD
         assert cr.value == "X25519MLKEM768"
-        assert any("CNSA" in d for d in cr.details)
+        assert cr.details == []
 
     def test_good_status_no_standard(self):
         checks: list = []

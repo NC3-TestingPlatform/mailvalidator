@@ -94,15 +94,11 @@ def _check_pqc(host: str, port: int, checks: list[CheckResult]) -> None:
     )
 
     if report.verdict == Verdict.SAFE:
-        details: list[str] = []
-        if kex_check and kex_check.standard:
-            details = [f"Standard: {kex_check.standard}."]
         checks.append(
             CheckResult(
                 name="PQC Key Exchange",
                 status=Status.GOOD,
                 value=report.negotiated_group or "safe",
-                details=details,
             )
         )
     else:

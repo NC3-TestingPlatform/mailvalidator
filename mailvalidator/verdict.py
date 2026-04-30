@@ -86,6 +86,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "Multiple SPF Records": VerdictSeverity.HIGH,
     # DANE certificate mismatch is actionable when DANE is deployed
     "DANE – Certificate Match": VerdictSeverity.HIGH,
+    "PQC Key Exchange": VerdictSeverity.HIGH,
     # ------------------------------------------------------------------ MEDIUM
     # Good to have but not urgent; operational/compliance rather than security gaps.
     "BIMI Record": VerdictSeverity.MEDIUM,
@@ -101,7 +102,6 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     # Reporting/deliverability rather than active attack-surface issues
     "TLSRPT Record": VerdictSeverity.MEDIUM,
     "Reverse DNS (PTR)": VerdictSeverity.MEDIUM,
-    "PQC Key Exchange": VerdictSeverity.MEDIUM,
     # ------------------------------------------------------------------ IGNORE
     # Informational checks — outcome is always noted, never actionable.
     "SMTP Connect": VerdictSeverity.CRITICAL,  # ERROR = unreachable mail server; OK filtered by _IGNORE_STATUSES

@@ -356,6 +356,39 @@ TLS 1.3.
 
 ---
 
+### PQC Key Exchange
+
+**What it checks:** Whether the SMTP server negotiates a post-quantum hybrid
+key exchange group during the TLS handshake — specifically one of the ML-KEM
+hybrid groups (X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024) defined
+in NSA CNSA 2.0 and BSI TR-02102-2.  The probe uses `openssl s_client`
+(requires OpenSSL ≥ 3.0) to advertise PQC groups in the ClientHello and
+checks whether the server selects one.
+
+**Why HIGH:**  
+Harvest-now-decrypt-later (HNDL) attacks allow adversaries to record encrypted
+SMTP sessions today and decrypt them once a cryptographically relevant quantum
+computer becomes available.  Mail metadata and message content captured in
+transit are at risk for any message exchanged without PQC-protected key
+exchange.  Standards bodies (NSA CNSA 2.0, BSI TR-02102-2, NIST FIPS 203)
+now mandate migration to ML-KEM hybrid groups.  Organisations handling
+sensitive or long-lived information should prioritise PQC deployment.
+The finding is HIGH rather than CRITICAL because classical TLS remains secure
+against today's adversaries — the risk is forward-looking but credible and
+the migration timeline is now active.
+
+**Status values:**
+- `GOOD` — PQC hybrid group negotiated (e.g. X25519MLKEM768); no action needed.
+- `WARNING` — Only classical key exchange negotiated; server is not PQC-ready.
+- `INFO` — Probe could not run (OpenSSL < 3.0 on the scanning host); no finding.
+
+**Remediation:** Upgrade the MTA's OpenSSL to ≥ 3.0 (included in Debian 12+,
+Ubuntu 22.04+) and enable hybrid PQC key exchange groups.  Most modern TLS
+stacks negotiate PQC groups automatically once OpenSSL 3.x is present and
+X25519MLKEM768 is included in the server's supported groups list.
+
+---
+
 ### SPF Policy
 
 **What it checks:** The `all` qualifier in the SPF record (`+all`, `?all`,

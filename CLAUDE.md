@@ -85,7 +85,7 @@ pytest tests/checks/test_spf.py -v
 
 - Test runner: `pytest` (auto-configured via `pyproject.toml`)
 - Coverage flag already wired: `--cov=mailvalidator --cov-report=term-missing`
-- **Current state: 697 tests, 100% coverage** across all 19 modules (2 010 statements)
+- **Current state: 697 tests, 100% coverage** across all 19 modules (2 007 statements)
 - Shared fixtures in `tests/conftest.py` — use `make_tls()`, `make_mx_result()`,
   `console_capture()`, `make_simple_result()`, `make_rsa_cert_der()`,
   `make_ec_cert_der()` rather than building objects by hand
@@ -119,6 +119,18 @@ If the test count or statement count changed, update **all two** occurrences in 
 
 Also update the count in this file (`CLAUDE.md`) under "Current state".
 
+If a **new check** was added or an existing check's severity changed, keep these
+three files in sync — they must always agree:
+
+1. **`README.md`** — Features table (`## Features`) and SMTP sub-check table
+   (`### SMTP check`): add a row for the check, naming the RFC/standard and what
+   is verified.
+2. **`docs/SECURITY_VERDICT.md`** — add a `###` section in the correct severity
+   block (CRITICAL / HIGH / MEDIUM) explaining what it checks, why that severity,
+   and the remediation steps.
+3. **`mailvalidator/verdict.py`** — `_PRIORITY` dict: register the check name
+   with the correct `VerdictSeverity` (or `None` for informational-only checks).
+
 ```bash
 # 2. Check for lint issues
 ruff check mailvalidator/
@@ -146,7 +158,7 @@ Two files must always be updated together:
 
 | I want to… | Look at… |
 |------------|---------|
-| Add a new check | `mailvalidator/checks/` + `models.py` + `reporter.py` + wire into `assessor.py` and `cli.py` |
+| Add a new check | `mailvalidator/checks/` + `models.py` + `reporter.py` + wire into `assessor.py` and `cli.py` + update `README.md` features/sub-check tables + `docs/SECURITY_VERDICT.md` + `verdict.py` `_PRIORITY` |
 | Change result rendering | `mailvalidator/reporter.py` |
 | Add a CLI flag | `mailvalidator/cli.py` |
 | Change the data model | `mailvalidator/models.py` |
