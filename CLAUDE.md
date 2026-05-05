@@ -16,7 +16,7 @@ MTA-STS, TLSRPT, DNSSEC, SMTP diagnostics, and DNS blacklists for a given domain
 | HTTP (MTA-STS) | aiohttp |
 | Crypto (TLS) | cryptography |
 | Testing | pytest + pytest-cov |
-| Vendored dep | `vendor/chainvalidator` (git submodule) |
+| Vendored deps | `vendor/chainvalidator`, `vendor/quantumvalidator` (git submodules) |
 
 ## Project Structure
 
@@ -43,7 +43,8 @@ mailvalidator/
 tests/
 ├── conftest.py    → Shared factories (make_tls, make_mx_result, console_capture…)
 └── checks/        → One test file per checks/ module
-vendor/chainvalidator/  → Git submodule; installed via requirements.txt
+vendor/chainvalidator/   → Git submodule; installed via requirements.txt
+vendor/quantumvalidator/ → Git submodule; installed via requirements.txt
 ```
 
 ## Data Model Pattern
