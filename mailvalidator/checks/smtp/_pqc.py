@@ -102,9 +102,7 @@ def _check_pqc(host: str, port: int, checks: list[CheckResult]) -> None:
             )
         )
     else:
-        details = ["No post-quantum hybrid group negotiated."]
-        if kex_check:
-            details.append(kex_check.reason)
+        details = [kex_check.reason if kex_check else "No post-quantum hybrid group negotiated."]
         checks.append(
             CheckResult(
                 name="PQC Key Exchange",

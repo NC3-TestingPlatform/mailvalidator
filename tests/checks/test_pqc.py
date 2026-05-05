@@ -150,8 +150,7 @@ class TestCheckPqcUnsafe:
         assert cr.name == "PQC Key Exchange"
         assert cr.status == Status.WARNING
         assert cr.value == "x25519"
-        assert "No post-quantum hybrid group negotiated." in cr.details
-        assert any("X25519MLKEM768" in d for d in cr.details)
+        assert cr.details == ["No PQC hybrid group; got x25519. Enable X25519MLKEM768."]
 
     def test_warning_none_group(self):
         checks: list = []
