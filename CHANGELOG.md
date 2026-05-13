@@ -113,7 +113,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.0...v0.1.3
