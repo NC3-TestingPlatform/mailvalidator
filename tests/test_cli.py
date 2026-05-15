@@ -12,12 +12,14 @@ from mailvalidator.cli import _validate_domain, _validate_host, _validate_ip, ap
 from mailvalidator.models import (
     BIMIResult,
     BlacklistResult,
+    CheckResult,
     DKIMResult,
     DMARCResult,
-    FullReport,
+    MailReport,
     MTASTSResult,
     SMTPDiagResult,
     SPFResult,
+    Status,
     TLSRPTResult,
 )
 from tests.conftest import make_mx_result, make_simple_result
@@ -190,17 +192,34 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
         ):
             assert _runner.invoke(app, ["check", "example.com"]).exit_code == 0
 
+    def test_cmd_check_df_grade_exits_1(self):
+        """D or F grade must cause exit code 1 (Fix B)."""
+        # Build a report with CRITICAL + HIGH issues → 35 penalty → D grade
+        report = MailReport(domain="example.com")
+        spf = SPFResult(domain="example.com")
+        spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
+        report.spf = spf
+        dkim = DKIMResult(domain="example.com")
+        dkim.checks = [CheckResult(name="DKIM Base Node", status=Status.ERROR)]
+        report.dkim = dkim
+        with (
+            patch("mailvalidator.cli.assess", return_value=report),
+            patch("mailvalidator.cli.print_full_report"),
+        ):
+            result = _runner.invoke(app, ["check", "example.com"])
+        assert result.exit_code == 1
+
     def test_cmd_check_no_smtp_flag(self):
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ) as mock,
             patch("mailvalidator.cli.print_full_report"),
         ):
@@ -211,7 +230,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ) as mock,
             patch("mailvalidator.cli.print_full_report"),
         ):
@@ -220,11 +239,11 @@ class TestCliCommands:
 
     def test_cmd_check_progress_cb_invoked(self):
         def _fake_assess(
-            domain, *, smtp_port, run_smtp, run_blacklist, run_dnssec, progress_cb
+            domain, *, smtp_port, run_smtp, run_blacklist, run_dnssec, progress_cb, timeout
         ):
             if progress_cb:
                 progress_cb("Checking MX records…")
-            return FullReport(domain=domain)
+            return MailReport(domain=domain)
 
         with (
             patch("mailvalidator.cli.assess", side_effect=_fake_assess),
@@ -237,12 +256,24 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ) as mock,
             patch("mailvalidator.cli.print_full_report"),
         ):
             _runner.invoke(app, ["check", "example.com", "--no-dnssec"])
         assert mock.call_args.kwargs.get("run_dnssec") is False
+
+    def test_cmd_check_timeout_flag(self):
+        """--timeout passes timeout= to assess."""
+        with (
+            patch(
+                "mailvalidator.cli.assess",
+                return_value=MailReport(domain="example.com"),
+            ) as mock,
+            patch("mailvalidator.cli.print_full_report"),
+        ):
+            _runner.invoke(app, ["check", "example.com", "--timeout", "10.0"])
+        assert mock.call_args.kwargs.get("timeout") == 10.0
 
     def test_cmd_check_output_txt(self, tmp_path):
         """--output FILE.txt calls save_report with the correct path."""
@@ -250,7 +281,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch("mailvalidator.cli.save_report") as mock_save,
@@ -264,7 +295,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch("mailvalidator.cli.save_report") as mock_save,
@@ -278,7 +309,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch("mailvalidator.cli.save_report") as mock_save,
@@ -293,7 +324,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch(
@@ -310,7 +341,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch(
@@ -326,7 +357,7 @@ class TestCliCommands:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report"),
             patch("mailvalidator.cli.save_report") as mock_save,
@@ -388,7 +419,7 @@ class TestJsonFlag:
         with (
             patch(
                 "mailvalidator.cli.assess",
-                return_value=FullReport(domain="example.com"),
+                return_value=MailReport(domain="example.com"),
             ),
             patch("mailvalidator.cli.print_full_report") as mock_print,
         ):

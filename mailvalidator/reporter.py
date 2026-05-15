@@ -21,7 +21,7 @@ from mailvalidator.models import (
     DKIMResult,
     DMARCResult,
     DNSSECResult,
-    FullReport,
+    MailReport,
     MTASTSResult,
     MXResult,
     SMTPDiagResult,
@@ -31,13 +31,13 @@ from mailvalidator.models import (
 )
 from mailvalidator.verdict import (
     Grade,
-    VerdictAction,
     VerdictSeverity,
     calculate_grade,
     extract_verdict_actions,
 )
 
-console = Console(record=True)
+_console = Console(record=True, highlight=False)
+console = _console  # public alias for cli.py import
 
 _STATUS_STYLE: dict[Status, tuple[str, str]] = {
     # Generic verdicts
@@ -139,19 +139,21 @@ def save_report(path: str) -> None:
             "Use a .txt, .svg, .html, or .htm extension."
         )
     if fmt == "text":
-        console.save_text(path, clear=False)
+        _console.save_text(path, clear=False)
     elif fmt == "svg":
-        console.save_svg(path, clear=False)
+        _console.save_svg(path, clear=False)
     else:
-        console.save_html(path, clear=False)
+        _console.save_html(path, clear=False)
 
 
-def print_mx(result: MXResult) -> None:
+def print_mx(result: MXResult, *, console: Console | None = None) -> None:
     """Render MX record lookup results to the terminal.
 
     :param result: MX check result to display.
     :type result: ~mailvalidator.models.MXResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
+    con = console or _console
     table = _checks_table(result.checks)
     if result.authoritative_ns:
         ns_line = Text(
@@ -161,7 +163,7 @@ def print_mx(result: MXResult) -> None:
         content = Group(ns_line, table)
     else:
         content = Group(table)
-    console.print(
+    con.print(
         Panel(
             content,
             title=f"[bold]MX Records[/bold] – {result.domain}",
@@ -179,7 +181,7 @@ _SMTP_SECTIONS: list[tuple[str, str]] = [
 ]
 
 
-def print_smtp(results: list[SMTPDiagResult]) -> None:
+def print_smtp(results: list[SMTPDiagResult], *, console: Console | None = None) -> None:
     """Render SMTP diagnostic results for one or more mail servers.
 
     Checks are grouped into four inner panels (Protocol, TLS, Certificate, DNS)
@@ -188,7 +190,9 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
 
     :param results: List of per-server SMTP diagnostic results.
     :type results: list[~mailvalidator.models.SMTPDiagResult]
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
+    con = console or _console
     for r in results:
         # Group by section
         sectioned: dict[str, list[CheckResult]] = {}
@@ -232,7 +236,7 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
             # No section metadata: flat table (backward-compatible)
             content = Group(_checks_table(r.checks))
 
-        console.print(
+        con.print(
             Panel(
                 content,
                 title=f"[bold]SMTP Diagnostics[/bold] – {r.host}:{r.port}",
@@ -242,13 +246,15 @@ def print_smtp(results: list[SMTPDiagResult]) -> None:
         )
 
 
-def print_dkim(result: DKIMResult) -> None:
+def print_dkim(result: DKIMResult, *, console: Console | None = None) -> None:
     """Render DKIM base-node check results to the terminal.
 
     :param result: DKIM check result to display.
     :type result: ~mailvalidator.models.DKIMResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DKIM[/bold] – _domainkey.{result.domain}",
@@ -258,13 +264,15 @@ def print_dkim(result: DKIMResult) -> None:
     )
 
 
-def print_bimi(result: BIMIResult) -> None:
+def print_bimi(result: BIMIResult, *, console: Console | None = None) -> None:
     """Render BIMI record validation results to the terminal.
 
     :param result: BIMI check result to display.
     :type result: ~mailvalidator.models.BIMIResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]BIMI[/bold] – default._bimi.{result.domain}",
@@ -274,13 +282,15 @@ def print_bimi(result: BIMIResult) -> None:
     )
 
 
-def print_tlsrpt(result: TLSRPTResult) -> None:
+def print_tlsrpt(result: TLSRPTResult, *, console: Console | None = None) -> None:
     """Render TLSRPT record validation results to the terminal.
 
     :param result: TLSRPT check result to display.
     :type result: ~mailvalidator.models.TLSRPTResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]TLSRPT[/bold] – _smtp._tls.{result.domain}",
@@ -290,18 +300,20 @@ def print_tlsrpt(result: TLSRPTResult) -> None:
     )
 
 
-def print_blacklist(result: BlacklistResult) -> None:
+def print_blacklist(result: BlacklistResult, *, console: Console | None = None) -> None:
     """Render DNS blacklist check results to the terminal.
 
     :param result: Blacklist check result to display.
     :type result: ~mailvalidator.models.BlacklistResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
+    con = console or _console
     summary = f"  Checked {result.total_checked} lists"
     if result.listed_on:
         summary += f" | [bold red]Listed on {len(result.listed_on)}[/bold red]"
     else:
         summary += " | [bold green]Clean[/bold green]"
-    console.print(
+    con.print(
         Panel(
             Group(Text.from_markup(summary), _checks_table(result.checks)),
             title=f"[bold]Blacklist / Blocklist Check[/bold] – {result.ip}",
@@ -311,13 +323,15 @@ def print_blacklist(result: BlacklistResult) -> None:
     )
 
 
-def print_spf(result: SPFResult) -> None:
+def print_spf(result: SPFResult, *, console: Console | None = None) -> None:
     """Render SPF record validation results to the terminal.
 
     :param result: SPF check result to display.
     :type result: ~mailvalidator.models.SPFResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]SPF[/bold] – {result.domain}",
@@ -327,13 +341,15 @@ def print_spf(result: SPFResult) -> None:
     )
 
 
-def print_dmarc(result: DMARCResult) -> None:
+def print_dmarc(result: DMARCResult, *, console: Console | None = None) -> None:
     """Render DMARC record validation results to the terminal.
 
     :param result: DMARC check result to display.
     :type result: ~mailvalidator.models.DMARCResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DMARC[/bold] – _dmarc.{result.domain}",
@@ -343,13 +359,15 @@ def print_dmarc(result: DMARCResult) -> None:
     )
 
 
-def print_mta_sts(result: MTASTSResult) -> None:
+def print_mta_sts(result: MTASTSResult, *, console: Console | None = None) -> None:
     """Render MTA-STS record and policy validation results to the terminal.
 
     :param result: MTA-STS check result to display.
     :type result: ~mailvalidator.models.MTASTSResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]MTA-STS[/bold] – {result.domain}",
@@ -359,13 +377,15 @@ def print_mta_sts(result: MTASTSResult) -> None:
     )
 
 
-def print_dnssec_domain(result: DNSSECResult) -> None:
+def print_dnssec_domain(result: DNSSECResult, *, console: Console | None = None) -> None:
     """Render DNSSEC email-domain check results to the terminal.
 
     :param result: DNSSEC check result for the email address domain.
     :type result: ~mailvalidator.models.DNSSECResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DNSSEC – Email Domain[/bold] – {result.domain}",
@@ -375,13 +395,15 @@ def print_dnssec_domain(result: DNSSECResult) -> None:
     )
 
 
-def print_dnssec_mx(result: DNSSECResult) -> None:
+def print_dnssec_mx(result: DNSSECResult, *, console: Console | None = None) -> None:
     """Render DNSSEC MX-domain check results to the terminal.
 
     :param result: DNSSEC check result for the MX server domain(s).
     :type result: ~mailvalidator.models.DNSSECResult
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.print(
+    con = console or _console
+    con.print(
         Panel(
             _checks_table(result.checks),
             title=f"[bold]DNSSEC – Mail Server Domain(s)[/bold] – {result.domain}",
@@ -404,6 +426,8 @@ _SEVERITY_STYLE: dict[VerdictSeverity, str] = {
     VerdictSeverity.CRITICAL: "bold red",
     VerdictSeverity.HIGH: "bold yellow",
     VerdictSeverity.MEDIUM: "bold cyan",
+    VerdictSeverity.LOW: "bold blue",
+    VerdictSeverity.INFO: "dim",
 }
 
 
@@ -426,26 +450,28 @@ def _grade_text(grade: Grade) -> Text:
     )
 
 
-def print_verdict(actions: list[VerdictAction], grade: Grade | None = None) -> None:
+def print_verdict(report: MailReport, *, console: Console | None = None) -> None:
     """Render the prioritised security verdict panel to the terminal.
 
-    Displays a colour-coded table of actionable items inside a Rich panel
-    whose border reflects the overall grade.  Items are sorted from most to
-    least urgent (``CRITICAL`` → ``HIGH`` → ``MEDIUM``).
+    Extracts verdict actions from *report*, computes the grade, and displays
+    a colour-coded table of actionable items inside a Rich panel whose border
+    reflects the overall grade.  Items are sorted from most to least urgent
+    (``CRITICAL`` → ``HIGH`` → ``MEDIUM``).
     Called by :func:`print_full_report`.
 
-    :param actions: Deduplicated, severity-sorted action list from
-        :func:`~mailvalidator.verdict.extract_verdict_actions`.
-    :type actions: list[~mailvalidator.verdict.VerdictAction]
-    :param grade: Optional grade computed by
-        :func:`~mailvalidator.verdict.calculate_grade`.
-    :type grade: ~mailvalidator.verdict.Grade or None
+    :param report: Full assessment report from
+        :func:`~mailvalidator.assessor.assess`.
+    :type report: ~mailvalidator.models.MailReport
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
+    con = console or _console
+    actions = extract_verdict_actions(report)
+    grade = calculate_grade(actions)
+
     border_colour = "white"
     title: Text | str = "Security Verdict"
-    if grade is not None:
-        title = _grade_text(grade)
-        border_colour = _GRADE_STYLE.get(grade.letter, "bold white").split()[-1]
+    title = _grade_text(grade)
+    border_colour = _GRADE_STYLE.get(grade.letter, "bold white").split()[-1]
 
     tbl = Table(
         box=box.SIMPLE, show_header=True, header_style="bold white", expand=True
@@ -463,7 +489,7 @@ def print_verdict(actions: list[VerdictAction], grade: Grade | None = None) -> N
             "No issues found — mail server configuration is excellent.",
         )
 
-    console.print(
+    con.print(
         Panel(
             tbl,
             title=title,
@@ -472,43 +498,46 @@ def print_verdict(actions: list[VerdictAction], grade: Grade | None = None) -> N
             padding=(0, 1),
         )
     )
-    console.print()
+    con.print()
 
 
-def print_full_report(report: FullReport) -> None:
-    """Render the complete :class:`~mailvalidator.models.FullReport` to the terminal.
+def print_full_report(report: MailReport, *, console: Console | None = None) -> None:
+    """Render the complete :class:`~mailvalidator.models.MailReport` to the terminal.
 
     Sections are printed in a fixed order that mirrors the check sequence
     in :func:`~mailvalidator.assessor.assess`.  Sections whose result is ``None``
     are silently skipped.
+
+    :param report: Full assessment report.
+    :type report: ~mailvalidator.models.MailReport
+    :param console: Optional injectable Rich Console; defaults to the module console.
     """
-    console.rule(f"[bold cyan]Mail Server Report: {report.domain}[/bold cyan]")
+    con = console or _console
+    con.rule(f"[bold cyan]Mail Server Report: {report.domain}[/bold cyan]")
 
     if report.mx:
-        print_mx(report.mx)
+        print_mx(report.mx, console=con)
     if report.dnssec_domain:
-        print_dnssec_domain(report.dnssec_domain)
+        print_dnssec_domain(report.dnssec_domain, console=con)
     if report.dnssec_mx:
-        print_dnssec_mx(report.dnssec_mx)
+        print_dnssec_mx(report.dnssec_mx, console=con)
     if report.smtp:
-        print_smtp(report.smtp)
+        print_smtp(report.smtp, console=con)
     if report.spf:
-        print_spf(report.spf)
+        print_spf(report.spf, console=con)
     if report.dmarc:
-        print_dmarc(report.dmarc)
+        print_dmarc(report.dmarc, console=con)
     if report.dkim:
-        print_dkim(report.dkim)
+        print_dkim(report.dkim, console=con)
     if report.bimi:
-        print_bimi(report.bimi)
+        print_bimi(report.bimi, console=con)
     if report.tlsrpt:
-        print_tlsrpt(report.tlsrpt)
+        print_tlsrpt(report.tlsrpt, console=con)
     if report.mta_sts:
-        print_mta_sts(report.mta_sts)
+        print_mta_sts(report.mta_sts, console=con)
     if report.blacklist:
-        print_blacklist(report.blacklist)
+        print_blacklist(report.blacklist, console=con)
 
-    actions = extract_verdict_actions(report)
-    grade = calculate_grade(actions)
-    print_verdict(actions, grade)
+    print_verdict(report, console=con)
 
-    console.rule("[dim]End of Report[/dim]")
+    con.rule("[dim]End of Report[/dim]")

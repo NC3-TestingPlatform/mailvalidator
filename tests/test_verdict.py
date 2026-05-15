@@ -9,7 +9,7 @@ from mailvalidator.models import (
     DKIMResult,
     DMARCResult,
     DNSSECResult,
-    FullReport,
+    MailReport,
     MTASTSResult,
     MXResult,
     SMTPDiagResult,
@@ -42,12 +42,12 @@ def _check(name: str, status: Status, value: str = "", details: list[str] | None
     return CheckResult(name=name, status=status, value=value, details=details or [])
 
 
-def _empty_report() -> FullReport:
-    return FullReport(domain="example.com")
+def _empty_report() -> MailReport:
+    return MailReport(domain="example.com")
 
 
-def _report_with_checks(*checks: CheckResult) -> FullReport:
-    r = FullReport(domain="example.com")
+def _report_with_checks(*checks: CheckResult) -> MailReport:
+    r = MailReport(domain="example.com")
     spf = SPFResult(domain="example.com")
     spf.checks = list(checks)
     r.spf = spf
@@ -321,7 +321,7 @@ class TestCollectChecks:
         assert any(c.name == "STARTTLS" for c in checks)
 
     def test_collects_from_all_result_types(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         for attr, cls in [
             ("mx", MXResult),
             ("spf", SPFResult),
@@ -443,7 +443,7 @@ class TestExtractVerdictActions:
         assert actions[0].check_name == "SPF Record"
 
     def test_bimi_not_found_produces_medium(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         bimi = BIMIResult(domain="example.com")
         bimi.checks = [_check("BIMI Record", Status.NOT_FOUND)]
         r.bimi = bimi
@@ -452,7 +452,7 @@ class TestExtractVerdictActions:
         assert actions[0].severity is VerdictSeverity.MEDIUM
 
     def test_sorted_critical_before_high_before_medium(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         spf = SPFResult(domain="example.com")
         spf.checks = [_check("SPF Record", Status.NOT_FOUND)]
         r.spf = spf
@@ -534,7 +534,7 @@ class TestExtractVerdictActions:
         assert actions[0].text.startswith("Fix")
 
     def test_action_text_verb_for_warning(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         dmarc = DMARCResult(domain="example.com")
         dmarc.checks = [_check("Policy (p=)", Status.WARNING)]
         r.dmarc = dmarc

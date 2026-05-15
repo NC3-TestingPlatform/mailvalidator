@@ -310,7 +310,7 @@ class DNSSECResult:
 
 
 @dataclass
-class FullReport:
+class MailReport:
     """Aggregated result of all checks run by :func:`mailvalidator.assessor.assess`.
 
     Individual fields are ``None`` or empty list when the corresponding check
@@ -342,3 +342,6 @@ class FullReport:
     blacklist: BlacklistResult | None = None
     dnssec_domain: DNSSECResult | None = None
     dnssec_mx: DNSSECResult | None = None
+
+
+FullReport = MailReport  # deprecated alias – use MailReport

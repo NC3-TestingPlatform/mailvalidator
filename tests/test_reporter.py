@@ -14,7 +14,7 @@ from mailvalidator.models import (
     DKIMResult,
     DMARCResult,
     DNSSECResult,
-    FullReport,
+    MailReport,
     MTASTSResult,
     MXRecord,
     MXResult,
@@ -42,12 +42,12 @@ from mailvalidator.reporter import (
     print_verdict,
     save_report,
 )
-from mailvalidator.verdict import Grade, VerdictAction, VerdictSeverity
+from mailvalidator.verdict import Grade
 from tests.conftest import console_capture
 
 
 def _patch_console(con):
-    return patch.object(_reporter_module, "console", con)
+    return patch.object(_reporter_module, "_console", con)
 
 
 class TestStatusText:
@@ -330,7 +330,7 @@ class TestPrintDnssecMx:
 
 class TestPrintFullReport:
     def _report(self, smtp=False, blacklist=False, dnssec=False):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         for attr, cls in [
             ("mx", MXResult),
             ("spf", SPFResult),
@@ -394,7 +394,7 @@ class TestPrintFullReport:
         assert "DNSSEC" in buf.getvalue()
 
     def test_empty_report_no_crash(self):
-        r = FullReport(domain="empty.example.com")
+        r = MailReport(domain="empty.example.com")
         con, buf = console_capture()
         with _patch_console(con):
             print_full_report(r)
@@ -404,56 +404,81 @@ class TestPrintFullReport:
 class TestPrintVerdict:
     """Tests for :func:`~mailvalidator.reporter.print_verdict`."""
 
-    def _action(self, severity: VerdictSeverity, check_name: str = "SPF Record", text: str | None = None) -> VerdictAction:
-        if text is None:
-            text = f"Fix {check_name}"
-        return VerdictAction(text=text, severity=severity, check_name=check_name)
+    def _report_with_spf_missing(self) -> MailReport:
+        r = MailReport(domain="example.com")
+        spf = SPFResult(domain="example.com")
+        spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
+        r.spf = spf
+        return r
+
+    def _report_with_starttls_error(self) -> MailReport:
+        r = MailReport(domain="example.com")
+        smtp = SMTPDiagResult(host="mail.example.com", port=25)
+        smtp.checks = [CheckResult(name="STARTTLS", status=Status.ERROR)]
+        r.smtp = [smtp]
+        return r
+
+    def _report_with_bimi_missing(self) -> MailReport:
+        r = MailReport(domain="example.com")
+        bimi = BIMIResult(domain="example.com")
+        bimi.checks = [CheckResult(name="BIMI Record", status=Status.NOT_FOUND)]
+        r.bimi = bimi
+        return r
+
+    def _report_with_all_issues(self) -> MailReport:
+        r = MailReport(domain="example.com")
+        spf = SPFResult(domain="example.com")
+        spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
+        r.spf = spf
+        smtp = SMTPDiagResult(host="mail.example.com", port=25)
+        smtp.checks = [CheckResult(name="STARTTLS", status=Status.ERROR)]
+        r.smtp = [smtp]
+        bimi = BIMIResult(domain="example.com")
+        bimi.checks = [CheckResult(name="BIMI Record", status=Status.NOT_FOUND)]
+        r.bimi = bimi
+        return r
 
     def test_renders_critical_label(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.CRITICAL)])
+            print_verdict(self._report_with_spf_missing())
         assert "CRITICAL" in buf.getvalue()
 
     def test_renders_high_label(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.HIGH, "STARTTLS")])
+            print_verdict(self._report_with_starttls_error())
         assert "HIGH" in buf.getvalue()
 
     def test_renders_medium_label(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.MEDIUM, "BIMI Record")])
+            print_verdict(self._report_with_bimi_missing())
         assert "MEDIUM" in buf.getvalue()
 
     def test_renders_action_text(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.CRITICAL, text="Fix SPF Record: no record found")])
+            print_verdict(self._report_with_spf_missing())
         assert "Fix SPF Record" in buf.getvalue()
 
     def test_renders_panel_title(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.HIGH, "STARTTLS")])
+            print_verdict(self._report_with_starttls_error())
         assert "Security Verdict" in buf.getvalue()
 
     def test_renders_multiple_actions(self):
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([
-                self._action(VerdictSeverity.CRITICAL, "SPF Record"),
-                self._action(VerdictSeverity.HIGH, "STARTTLS"),
-                self._action(VerdictSeverity.MEDIUM, "BIMI Record"),
-            ])
+            print_verdict(self._report_with_all_issues())
         output = buf.getvalue()
         assert "CRITICAL" in output
         assert "HIGH" in output
         assert "MEDIUM" in output
 
     def test_verdict_shown_in_full_report_when_actions_exist(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         spf = SPFResult(domain="example.com")
         spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
         r.spf = spf
@@ -464,7 +489,7 @@ class TestPrintVerdict:
 
     def test_verdict_shown_in_full_report_when_all_pass(self):
         # Grade panel is always shown (with A+ when no issues)
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         spf = SPFResult(domain="example.com")
         spf.checks = [CheckResult(name="SPF Record", status=Status.OK, value="v=spf1 -all")]
         r.spf = spf
@@ -473,35 +498,45 @@ class TestPrintVerdict:
             print_full_report(r)
         assert "Security Verdict" in buf.getvalue()
 
-    def test_grade_shown_in_panel_when_provided(self):
-        grade = Grade(letter="A+", penalty=0, rationale="No issues found.")
+    def test_grade_shown_in_panel_when_all_pass(self):
+        """print_verdict on a clean report always shows A+ grade."""
+        r = MailReport(domain="example.com")
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([], grade=grade)
+            print_verdict(r)
         assert "A+" in buf.getvalue()
 
-    def test_grade_rationale_shown_when_provided(self):
-        grade = Grade(letter="F", penalty=50, rationale="2 critical issue(s) found (50 penalty point(s)).")
+    def test_grade_rationale_shown_when_issues_exist(self):
+        """Penalty points appear in the rationale for a failing report."""
+        # Two CRITICAL issues: SPF missing + DMARC missing → 50 penalty points
+        r = MailReport(domain="example.com")
+        spf = SPFResult(domain="example.com")
+        spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
+        r.spf = spf
+        dmarc = DMARCResult(domain="example.com")
+        dmarc.checks = [CheckResult(name="DMARC Record", status=Status.NOT_FOUND)]
+        r.dmarc = dmarc
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.CRITICAL)], grade=grade)
+            print_verdict(r)
         assert "50" in buf.getvalue()
 
-    def test_no_grade_still_renders_panel(self):
+    def test_no_actions_renders_panel(self):
+        r = MailReport(domain="example.com")
         con, buf = console_capture()
         with _patch_console(con):
-            print_verdict([self._action(VerdictSeverity.HIGH)], grade=None)
+            print_verdict(r)
         assert "Security Verdict" in buf.getvalue()
 
     def test_full_report_grade_a_plus_when_all_pass(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         con, buf = console_capture()
         with _patch_console(con):
             print_full_report(r)
         assert "A+" in buf.getvalue()
 
     def test_full_report_shows_grade_when_issues_exist(self):
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         spf = SPFResult(domain="example.com")
         spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
         r.spf = spf
@@ -541,26 +576,26 @@ class TestSaveReport:
 
     def _printed_report(self):
         """Prime the console buffer with a minimal full report."""
-        r = FullReport(domain="example.com")
+        r = MailReport(domain="example.com")
         con, buf = console_capture()
         with _patch_console(con):
             print_full_report(r)
 
     def test_save_text_calls_save_text(self, tmp_path):
         dest = str(tmp_path / "report.txt")
-        with patch.object(_reporter_module, "console") as mock_con:
+        with patch.object(_reporter_module, "_console") as mock_con:
             save_report(dest)
         mock_con.save_text.assert_called_once_with(dest, clear=False)
 
     def test_save_svg_calls_save_svg(self, tmp_path):
         dest = str(tmp_path / "report.svg")
-        with patch.object(_reporter_module, "console") as mock_con:
+        with patch.object(_reporter_module, "_console") as mock_con:
             save_report(dest)
         mock_con.save_svg.assert_called_once_with(dest, clear=False)
 
     def test_save_html_calls_save_html(self, tmp_path):
         dest = str(tmp_path / "report.html")
-        with patch.object(_reporter_module, "console") as mock_con:
+        with patch.object(_reporter_module, "_console") as mock_con:
             save_report(dest)
         mock_con.save_html.assert_called_once_with(dest, clear=False)
 
@@ -574,7 +609,7 @@ class TestSaveReport:
 
     def test_extension_is_case_insensitive(self, tmp_path):
         dest = str(tmp_path / "report.TXT")
-        with patch.object(_reporter_module, "console") as mock_con:
+        with patch.object(_reporter_module, "_console") as mock_con:
             save_report(dest)
         mock_con.save_text.assert_called_once()
 

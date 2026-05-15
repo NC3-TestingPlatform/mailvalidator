@@ -24,7 +24,7 @@ MTA-STS, TLSRPT, DNSSEC, SMTP diagnostics, and DNS blacklists for a given domain
 mailvalidator/
 ├── cli.py         → Typer CLI entry point; all sub-commands defined here
 ├── assessor.py    → assess() orchestrates the full check pipeline
-├── models.py      → All dataclasses (CheckResult, Status, *Result, FullReport)
+├── models.py      → All dataclasses (CheckResult, Status, *Result, MailReport; FullReport is a deprecated alias)
 ├── dns_utils.py   → Shared DNS helpers
 ├── reporter.py    → Rich rendering for each result type + save_report()
 ├── verdict.py     → Security verdict extraction: severity mapping, action deduplication

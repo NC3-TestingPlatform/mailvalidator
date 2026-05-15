@@ -9,6 +9,7 @@ Typical usage::
 
 from __future__ import annotations
 
+import logging
 import socket
 from typing import Callable
 
@@ -22,7 +23,9 @@ from mailvalidator.checks.mx import check_mx
 from mailvalidator.checks.smtp import check_smtp
 from mailvalidator.checks.spf import check_spf
 from mailvalidator.checks.tlsrpt import check_tlsrpt
-from mailvalidator.models import FullReport, MXRecord, SMTPDiagResult
+from mailvalidator.models import MailReport, MXRecord, SMTPDiagResult
+
+logger = logging.getLogger("mailvalidator")
 
 
 def _resolve_mx_ips(records: list[MXRecord]) -> list[str]:
@@ -48,8 +51,9 @@ def assess(
     run_smtp: bool = True,
     run_dnssec: bool = True,
     progress_cb: Callable[[str], None] | None = None,
-) -> FullReport:
-    """Run all mail server checks for *domain* and return a :class:`~mailvalidator.models.FullReport`.
+    timeout: float = 5.0,
+) -> MailReport:
+    """Run all mail server checks for *domain* and return a :class:`~mailvalidator.models.MailReport`.
 
     :param domain: The target domain name to assess (e.g. ``"example.com"``).
     :param smtp_port: TCP port used for SMTP diagnostics.  Defaults to ``25``.
@@ -63,16 +67,17 @@ def assess(
     :param progress_cb: Optional callable invoked with a short status string
         before each check group.  Useful for driving a progress spinner in
         the CLI.
-    :returns: Populated :class:`~mailvalidator.models.FullReport`; individual
+    :param timeout: DNS/network timeout in seconds.  Defaults to ``5.0``.
+    :returns: Populated :class:`~mailvalidator.models.MailReport`; individual
         fields are ``None`` when the corresponding check was skipped.
-    :rtype: ~mailvalidator.models.FullReport
+    :rtype: ~mailvalidator.models.MailReport
     """
 
     def _cb(msg: str) -> None:
         if progress_cb:
             progress_cb(msg)
 
-    report = FullReport(domain=domain)
+    report = MailReport(domain=domain)
 
     _cb("Checking MX records…")
     report.mx = check_mx(domain)

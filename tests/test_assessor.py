@@ -10,7 +10,7 @@ from mailvalidator.models import (
     BIMIResult,
     DKIMResult,
     DMARCResult,
-    FullReport,
+    MailReport,
     MTASTSResult,
     MXRecord,
     SPFResult,
@@ -85,7 +85,7 @@ class TestAssess:
             }
         ):
             report = assess("example.com")
-        assert isinstance(report, FullReport)
+        assert isinstance(report, MailReport)
         assert report.domain == "example.com"
 
     def test_progress_cb_called(self):

@@ -13,19 +13,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from mailvalidator.models import CheckResult, FullReport, Status
+from mailvalidator.models import CheckResult, MailReport, Status
 
 
 class VerdictSeverity(str, Enum):
     """Severity level for a verdict action item.
 
     Ordered from most to least urgent:
-    ``CRITICAL`` → ``HIGH`` → ``MEDIUM``.
+    ``CRITICAL`` → ``HIGH`` → ``MEDIUM`` → ``LOW`` → ``INFO``.
     """
 
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
 
 
 @dataclass
@@ -139,6 +141,8 @@ _SEVERITY_ORDER: dict[VerdictSeverity, int] = {
     VerdictSeverity.CRITICAL: 0,
     VerdictSeverity.HIGH: 1,
     VerdictSeverity.MEDIUM: 2,
+    VerdictSeverity.LOW: 3,
+    VerdictSeverity.INFO: 4,
 }
 
 # Penalty points added per action (penalty-based: 0 = perfect).
@@ -146,6 +150,8 @@ _PENALTY: dict[VerdictSeverity, int] = {
     VerdictSeverity.CRITICAL: 25,
     VerdictSeverity.HIGH: 10,
     VerdictSeverity.MEDIUM: 3,
+    VerdictSeverity.LOW: 1,
+    VerdictSeverity.INFO: 0,
 }
 
 # Penalty thresholds for each letter grade (upper bound, exclusive).
@@ -393,11 +399,11 @@ def _version_label_from_name(name: str) -> str | None:
     return None
 
 
-def _collect_checks(report: FullReport) -> list[CheckResult]:
+def _collect_checks(report: MailReport) -> list[CheckResult]:
     """Collect all :class:`~mailvalidator.models.CheckResult` items from *report*.
 
     :param report: Full assessment report.
-    :type report: ~mailvalidator.models.FullReport
+    :type report: ~mailvalidator.models.MailReport
     :returns: Flat list of every check result present in the report.
     :rtype: list[~mailvalidator.models.CheckResult]
     """
@@ -442,7 +448,7 @@ def _deduplicate_actions(actions: list[VerdictAction]) -> list[VerdictAction]:
     return result
 
 
-def extract_verdict_actions(report: FullReport) -> list[VerdictAction]:
+def extract_verdict_actions(report: MailReport) -> list[VerdictAction]:
     """Extract prioritised action items from *report*.
 
     Checks that already pass (status ``OK``, ``GOOD``, ``INFO``, ``N/A``, or
@@ -458,7 +464,7 @@ def extract_verdict_actions(report: FullReport) -> list[VerdictAction]:
     The result is sorted from most to least urgent.
 
     :param report: Full assessment report.
-    :type report: ~mailvalidator.models.FullReport
+    :type report: ~mailvalidator.models.MailReport
     :returns: Deduplicated, severity-sorted list of action items.  Empty list
         if everything passes.
     :rtype: list[VerdictAction]

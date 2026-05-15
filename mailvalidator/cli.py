@@ -33,6 +33,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from mailvalidator import __version__
 from mailvalidator.assessor import assess
+from mailvalidator.verdict import calculate_grade, extract_verdict_actions
 from mailvalidator.checks.bimi import check_bimi
 from mailvalidator.checks.blacklist import check_blacklist
 from mailvalidator.checks.dkim import check_dkim
@@ -218,6 +219,10 @@ def cmd_check(
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
+    timeout: Annotated[
+        float,
+        typer.Option("--timeout", "-T", help="DNS/network timeout in seconds."),
+    ] = 5.0,
 ) -> None:
     """Run all mail server checks for DOMAIN and print a full report."""
     with Progress(
@@ -237,6 +242,7 @@ def cmd_check(
             run_blacklist=not no_blacklist,
             run_dnssec=not no_dnssec,
             progress_cb=_progress_cb,
+            timeout=timeout,
         )
 
     if json_output:
@@ -244,6 +250,11 @@ def cmd_check(
         return
 
     print_full_report(report)
+
+    actions = extract_verdict_actions(report)
+    grade = calculate_grade(actions)
+    if grade.letter in ("D", "F"):
+        raise typer.Exit(code=1)
 
     if output:
         try:
