@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.1.7] — 2026-05-15
+
 ### Changed
 - `__init__`: added `NullHandler` on the `"mailvalidator"` logger so library
   users do not see spurious "No handler found" warnings (consistent with all
@@ -120,7 +124,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.3...v0.1.4
