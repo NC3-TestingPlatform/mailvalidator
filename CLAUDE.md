@@ -86,7 +86,7 @@ pytest tests/checks/test_spf.py -v
 
 - Test runner: `pytest` (auto-configured via `pyproject.toml`)
 - Coverage flag already wired: `--cov=mailvalidator --cov-report=term-missing`
-- **Current state: 697 tests, 100% coverage** across all 19 modules (2 007 statements)
+- **Current state: 698 tests, 100% coverage** across all 19 modules (2 008 statements)
 - Shared fixtures in `tests/conftest.py` — use `make_tls()`, `make_mx_result()`,
   `console_capture()`, `make_simple_result()`, `make_rsa_cert_der()`,
   `make_ec_cert_der()` rather than building objects by hand

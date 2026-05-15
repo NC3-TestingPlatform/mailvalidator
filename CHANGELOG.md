@@ -9,6 +9,13 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+- `__init__`: added `NullHandler` on the `"mailvalidator"` logger so library
+  users do not see spurious "No handler found" warnings (consistent with all
+  other platform modules).
+- CLI: internal variable `as_json` renamed to `json_output` across all
+  sub-commands, aligning with the platform-wide naming convention.
+
 ---
 
 ## [0.1.6] — 2026-04-30
