@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.1.8] — 2026-05-15
+
 ### Added
 - `mailvalidator/constants.py` — new module exposing `SMTP_DEFAULT_PORT`,
   `DNS_TIMEOUT`, `SMTP_TIMEOUT`, and `HTTP_TIMEOUT` constants, consistent
@@ -16,8 +20,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - `pytest-mock>=3.12` added to dev extras.
 
 ### Changed
-- `models`: `FullReport` renamed to `MailReport`; `FullReport` is kept as a
-  deprecated alias for backward compatibility.
+- `models`: `FullReport` deprecated alias removed; use `MailReport` directly.
 - `assessor`: `assess()` parameters after the first positional are now
   keyword-only (enforced by `*,`); logger moved below all imports to fix
   E402 linting errors.
@@ -148,7 +151,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.4...v0.1.5

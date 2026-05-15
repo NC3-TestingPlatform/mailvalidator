@@ -344,4 +344,3 @@ class MailReport:
     dnssec_mx: DNSSECResult | None = None
 
 
-FullReport = MailReport  # deprecated alias – use MailReport

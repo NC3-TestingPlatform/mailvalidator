@@ -1,6 +1,6 @@
 """Verdict panel: extract and display prioritised security actions.
 
-Analyses a :class:`~mailvalidator.models.FullReport` and produces a ranked
+Analyses a :class:`~mailvalidator.models.MailReport` and produces a ranked
 list of :class:`VerdictAction` items highlighting the most important
 improvements an operator should make.  Severity is context-aware — e.g.
 ``BIMI Record`` missing is at most MEDIUM because BIMI is an optional
