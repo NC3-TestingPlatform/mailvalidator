@@ -9,6 +9,30 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+- `mailvalidator/constants.py` — new module exposing `SMTP_DEFAULT_PORT`,
+  `DNS_TIMEOUT`, `SMTP_TIMEOUT`, and `HTTP_TIMEOUT` constants, consistent
+  with the platform-wide `constants.py` convention.
+- `pytest-mock>=3.12` added to dev extras.
+
+### Changed
+- `models`: `FullReport` renamed to `MailReport`; `FullReport` is kept as a
+  deprecated alias for backward compatibility.
+- `assessor`: `assess()` parameters after the first positional are now
+  keyword-only (enforced by `*,`); logger moved below all imports to fix
+  E402 linting errors.
+- `cli`: `check` command gains a `--timeout / -T` option (default `5.0 s`);
+  exit code `1` is now raised when the calculated grade is D or F.
+- `reporter`: console renamed to private `_console` with a public alias;
+  `Console` created with `highlight=False`; all `print_*` functions accept
+  `*, console: Console | None = None`; `save_report()` always writes from
+  `_console`.
+- `print_verdict` signature changed from `(actions, grade)` to
+  `(report, *, console=None)` — verdict actions and grade are now extracted
+  internally, consistent with all other platform modules.
+- `verdict`: `VerdictSeverity` gains `LOW` (1 pt penalty) and `INFO`
+  (0 pt penalty) members, aligning the enum with `headersvalidator`.
+
 ---
 
 ## [0.1.7] — 2026-05-15
