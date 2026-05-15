@@ -214,7 +214,7 @@ def cmd_check(
             ),
         ),
     ] = None,
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
@@ -239,7 +239,7 @@ def cmd_check(
             progress_cb=_progress_cb,
         )
 
-    if as_json:
+    if json_output:
         _print_json(report)
         return
 
@@ -265,14 +265,14 @@ def cmd_mx(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Look up MX records for DOMAIN."""
     result = check_mx(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_mx(result)
@@ -290,14 +290,14 @@ def cmd_smtp(
         int,
         typer.Option("--port", "-p", help="SMTP port."),
     ] = 25,
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Run SMTP diagnostics against HOST."""
     result = check_smtp(host, port=port)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_smtp([result])
@@ -309,14 +309,14 @@ def cmd_spf(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Look up and validate the SPF record for DOMAIN."""
     result = check_spf(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_spf(result)
@@ -328,14 +328,14 @@ def cmd_dmarc(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Look up and validate the DMARC record for DOMAIN."""
     result = check_dmarc(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_dmarc(result)
@@ -347,14 +347,14 @@ def cmd_dkim(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Check the DKIM base node (_domainkey.DOMAIN) for RFC 2308 conformance."""
     result = check_dkim(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_dkim(result)
@@ -366,14 +366,14 @@ def cmd_bimi(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Look up and validate the BIMI record for DOMAIN."""
     result = check_bimi(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_bimi(result)
@@ -385,14 +385,14 @@ def cmd_tlsrpt(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Check the SMTP TLS Reporting (TLSRPT) record for DOMAIN."""
     result = check_tlsrpt(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_tlsrpt(result)
@@ -404,14 +404,14 @@ def cmd_mta_sts(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Check the MTA-STS DNS record and policy file for DOMAIN."""
     result = check_mta_sts(domain)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_mta_sts(result)
@@ -427,14 +427,14 @@ def cmd_blacklist(
         int,
         typer.Option("--workers", "-w", help="Number of parallel DNS workers."),
     ] = 50,
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
 ) -> None:
     """Check IP against 100+ DNS blacklists."""
     result = check_blacklist(ip, max_workers=workers)
-    if as_json:
+    if json_output:
         _print_json(result)
     else:
         print_blacklist(result)
@@ -446,7 +446,7 @@ def cmd_dnssec(
         str,
         typer.Argument(help="Domain name.", callback=_validate_domain),
     ],
-    as_json: Annotated[
+    json_output: Annotated[
         bool,
         typer.Option("--json", help="Output results as JSON."),
     ] = False,
@@ -459,7 +459,7 @@ def cmd_dnssec(
         mx_domains = [r.exchange for r in mx_result.records]
         mx_dnssec = check_dnssec_mx(mx_domains, email_domain=domain)
 
-    if as_json:
+    if json_output:
         payload: dict = {"domain": dataclasses.asdict(domain_result)}
         if mx_dnssec is not None:
             payload["mx"] = dataclasses.asdict(mx_dnssec)
