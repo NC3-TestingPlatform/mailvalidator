@@ -9,6 +9,18 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+- `checks/smtp/_pqc`: new `_check_pqc_certificate` check — detects whether the
+  mail server certificate uses a post-quantum signature algorithm (ML-DSA, SLH-DSA,
+  FN-DSA) by parsing the `signatureAlgorithm` OID against NIST FIPS 204/205 and
+  provisional IETF/OQS OIDs.  Classical certs (RSA/ECDSA) yield `INFO` — no grade
+  penalty since PQC certs are not yet widely issued by public CAs.  OID table
+  (`_PQC_SIG_OIDS`) exported for tests and external consumers.
+- `checks/smtp/_tls_probe`: TLS 1.3 key-exchange group detection via pyOpenSSL
+  (`SSL_get0_group_name`).  A dedicated STARTTLS probe using `OpenSSL.SSL.Connection`
+  runs as a fallback when the stdlib `ssl` module does not expose the group (current
+  Python/OpenSSL builds).  `pyopenssl>=24.3` added as a runtime dependency.
+
 ---
 
 ## [0.1.8] — 2026-05-15

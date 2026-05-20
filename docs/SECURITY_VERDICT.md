@@ -679,6 +679,7 @@ They are included for visibility and operational awareness.
 | DNS Version                      | DNS query metadata; informational                                                                           |
 | DANE – DNSSEC Prerequisite       | Noted when DANE records exist but DNSSEC is not signed; DNSSEC itself carries the MEDIUM finding           |
 | TLS Inspection                   | Aggregate summary label; individual cipher/version checks carry the penalties                              |
+| PQC Certificate                  | Reports whether the server certificate uses a post-quantum signature algorithm (ML-DSA, SLH-DSA, FN-DSA). `GOOD` if a PQC OID (NIST FIPS 204/205 or provisional IETF/OQS) is detected; `INFO` if the certificate uses a classical algorithm (RSA / ECDSA). No penalty is applied because public CAs do not yet issue PQC certificates at scale — this is a forward-looking readiness indicator that complements **PQC Key Exchange**. Revisit this severity once PQC certificate issuance becomes mainstream (expected 2026–2027). |
 
 ---
 

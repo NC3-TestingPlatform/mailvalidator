@@ -40,7 +40,7 @@ from ._protocol import (
 )
 
 # _pqc
-from ._pqc import _assess_pqc, _check_pqc
+from ._pqc import _assess_pqc, _check_pqc, _check_pqc_certificate, _PQC_SIG_OIDS
 
 # _tls_checks
 from ._tls_checks import (
@@ -65,6 +65,8 @@ __all__ = [
     "check_smtp",
     "_assess_pqc",
     "_check_pqc",
+    "_check_pqc_certificate",
+    "_PQC_SIG_OIDS",
     "_connect_or_fallback",
     "_SMTP_FALLBACK_PORTS",
     "_cert_info",

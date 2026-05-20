@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import ssl
 import smtplib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +18,15 @@ from ._connection import (
     _starttls_and_get_cipher,
     _TIMEOUT,
 )
+
+try:
+    from OpenSSL import SSL as _openssl_ssl
+
+    _HAS_GET_GROUP_NAME: bool = callable(
+        getattr(_openssl_ssl.Connection, "get_group_name", None)
+    )
+except ImportError:  # pragma: no cover
+    _HAS_GET_GROUP_NAME = False
 
 # ---------------------------------------------------------------------------
 # TLS version probing
@@ -450,6 +460,93 @@ _VERSION_MAP: dict[str, tuple[ssl.TLSVersion, ssl.TLSVersion]] = _build_version_
 
 
 # ---------------------------------------------------------------------------
+# pyOpenSSL group probe
+# ---------------------------------------------------------------------------
+
+
+def _get_group_pyopenssl(
+    host: str,
+    port: int,
+    helo_domain: str,
+    sni_hostname: str | None,
+) -> str:  # pragma: no cover
+    """Return the TLS key-exchange group name via pyOpenSSL's ``SSL_get0_group_name``.
+
+    Opens a dedicated SMTP+STARTTLS connection using :mod:`OpenSSL.SSL` to
+    read the negotiated group from the TLS session.  Returns ``""`` on any
+    error or if pyOpenSSL / the OpenSSL binding is not available.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param sni_hostname: Hostname for SNI, or ``None`` for bare IPs.
+    :type sni_hostname: str or None
+    :returns: Group name (e.g. ``"x25519"``, ``"P-256"``) or ``""``.
+    :rtype: str
+    """
+    if not _HAS_GET_GROUP_NAME:
+        return ""
+
+    def _read_response(sock: socket.socket) -> str:
+        """Read a possibly multi-line SMTP response; return the 3-char status code."""
+        buf = b""
+        while True:
+            chunk = sock.recv(512)
+            if not chunk:
+                return ""
+            buf += chunk
+            while b"\r\n" in buf:
+                line, buf = buf.split(b"\r\n", 1)
+                text = line.decode("ascii", errors="replace")
+                if len(text) >= 4 and text[3] == " ":
+                    return text[:3]
+
+    try:
+        sock = socket.create_connection((host, port), timeout=_TIMEOUT)
+    except OSError:
+        return ""
+
+    try:
+        if _read_response(sock) != "220":
+            return ""
+        sock.sendall(f"EHLO {helo_domain}\r\n".encode())
+        if _read_response(sock) != "250":
+            return ""
+        sock.sendall(b"STARTTLS\r\n")
+        if _read_response(sock) != "220":
+            return ""
+
+        ctx = _openssl_ssl.Context(_openssl_ssl.TLS_CLIENT_METHOD)
+        ctx.set_verify(_openssl_ssl.VERIFY_NONE, lambda *_: True)
+        conn = _openssl_ssl.Connection(ctx, sock)
+        conn.set_connect_state()
+        if sni_hostname:
+            conn.set_tlsext_host_name(sni_hostname.encode())
+        while True:
+            try:
+                conn.do_handshake()
+                break
+            except (_openssl_ssl.WantReadError, _openssl_ssl.WantWriteError):
+                pass
+        group = conn.get_group_name() or ""
+        try:
+            conn.shutdown()
+        except Exception:
+            pass
+        return group
+    except Exception:
+        return ""
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # TLS probe – collects deep session metadata via STARTTLS
 # ---------------------------------------------------------------------------
 
@@ -513,6 +610,8 @@ def _probe_tls(
             details.dh_group = group_fn() or ""
     except Exception:
         pass
+    if not details.dh_group:
+        details.dh_group = _get_group_pyopenssl(host, port, helo_domain, sni_hostname)
 
     der = raw.getpeercert(binary_form=True)
     if der:

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from mailvalidator.checks.smtp import _assess_pqc, _check_pqc
-from mailvalidator.models import Status
+from mailvalidator.checks.smtp import (
+    _assess_pqc,
+    _check_pqc,
+    _check_pqc_certificate,
+    _PQC_SIG_OIDS,
+)
+from mailvalidator.models import Status, TLSDetails
 
 from quantumvalidator.models import (
     CheckResult as QVCheckResult,
@@ -195,3 +200,107 @@ class TestCheckPqcError:
         with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
             _check_pqc("mail.example.com", 25, checks)
         assert "Connection timed out." in checks[0].details
+
+
+# ---------------------------------------------------------------------------
+# _check_pqc_certificate
+# ---------------------------------------------------------------------------
+
+
+def _make_details_with_der(der: bytes, pubkey_type: str = "RSA") -> TLSDetails:
+    """Return a TLSDetails with a stashed cert DER and cert_pubkey_type."""
+    d = TLSDetails(cert_subject="CN=mail.example.com", cert_pubkey_type=pubkey_type)
+    d._cert_der = der  # type: ignore[attr-defined]
+    return d
+
+
+def _mock_cert(oid_dotted: str) -> MagicMock:
+    """Return a mock x509 certificate whose signature_algorithm_oid.dotted_string is *oid_dotted*."""
+    cert = MagicMock()
+    cert.signature_algorithm_oid.dotted_string = oid_dotted
+    return cert
+
+
+class TestCheckPqcCertificate:
+    def test_no_cert_der_returns_info(self):
+        """No _cert_der stash → INFO 'not available'."""
+        checks: list = []
+        _check_pqc_certificate(TLSDetails(), checks)
+        assert checks[0].name == "PQC Certificate"
+        assert checks[0].status == Status.INFO
+        assert checks[0].value == "not available"
+
+    def test_classical_rsa_cert(self):
+        """Real RSA DER → INFO 'Classical (RSA)'."""
+        from tests.conftest import make_rsa_cert_der
+
+        checks: list = []
+        _check_pqc_certificate(_make_details_with_der(make_rsa_cert_der(), "RSA"), checks)
+        assert checks[0].status == Status.INFO
+        assert "RSA" in checks[0].value
+
+    def test_classical_ec_cert(self):
+        """Real EC DER → INFO 'Classical (EC)'."""
+        from tests.conftest import make_ec_cert_der
+
+        checks: list = []
+        _check_pqc_certificate(_make_details_with_der(make_ec_cert_der(), "EC"), checks)
+        assert checks[0].status == Status.INFO
+        assert "EC" in checks[0].value
+
+    def test_pqc_ml_dsa_44(self):
+        """ML-DSA-44 OID → GOOD 'ML-DSA-44'."""
+        checks: list = []
+        cert = _mock_cert("2.16.840.1.101.3.4.3.17")
+        with patch("cryptography.x509.load_der_x509_certificate", return_value=cert):
+            _check_pqc_certificate(_make_details_with_der(b"fake"), checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "ML-DSA-44"
+
+    def test_pqc_ml_dsa_65(self):
+        """ML-DSA-65 OID → GOOD 'ML-DSA-65'."""
+        checks: list = []
+        cert = _mock_cert("2.16.840.1.101.3.4.3.18")
+        with patch("cryptography.x509.load_der_x509_certificate", return_value=cert):
+            _check_pqc_certificate(_make_details_with_der(b"fake"), checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "ML-DSA-65"
+
+    def test_pqc_slh_dsa(self):
+        """SLH-DSA-SHA2-128s OID → GOOD."""
+        checks: list = []
+        cert = _mock_cert("2.16.840.1.101.3.4.3.20")
+        with patch("cryptography.x509.load_der_x509_certificate", return_value=cert):
+            _check_pqc_certificate(_make_details_with_der(b"fake"), checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "SLH-DSA-SHA2-128s"
+
+    def test_pqc_fn_dsa(self):
+        """FN-DSA-512 provisional OID → GOOD."""
+        checks: list = []
+        cert = _mock_cert("1.3.9999.3.6")
+        with patch("cryptography.x509.load_der_x509_certificate", return_value=cert):
+            _check_pqc_certificate(_make_details_with_der(b"fake"), checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "FN-DSA-512"
+
+    def test_all_pqc_oids_covered(self):
+        """Every OID in _PQC_SIG_OIDS returns GOOD status."""
+        for oid, name in _PQC_SIG_OIDS.items():
+            checks: list = []
+            cert = _mock_cert(oid)
+            with patch("cryptography.x509.load_der_x509_certificate", return_value=cert):
+                _check_pqc_certificate(_make_details_with_der(b"fake"), checks)
+            assert checks[0].status == Status.GOOD, f"OID {oid} ({name}) did not return GOOD"
+            assert checks[0].value == name
+
+    def test_parse_error_returns_info(self):
+        """DER parse failure → INFO 'not available'."""
+        checks: list = []
+        with patch(
+            "cryptography.x509.load_der_x509_certificate",
+            side_effect=ValueError("bad DER"),
+        ):
+            _check_pqc_certificate(_make_details_with_der(b"garbage"), checks)
+        assert checks[0].status == Status.INFO
+        assert checks[0].value == "not available"

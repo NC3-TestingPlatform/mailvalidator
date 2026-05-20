@@ -89,6 +89,7 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     # DANE certificate mismatch is actionable when DANE is deployed
     "DANE – Certificate Match": VerdictSeverity.HIGH,
     "PQC Key Exchange": VerdictSeverity.HIGH,
+    "PQC Certificate": None,
     # ------------------------------------------------------------------ MEDIUM
     # Good to have but not urgent; operational/compliance rather than security gaps.
     "BIMI Record": VerdictSeverity.MEDIUM,
