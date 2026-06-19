@@ -21,6 +21,7 @@ from ._tls_checks import (
     _check_key_exchange,
     _check_renegotiation,
     _check_tls_version,
+    _check_zero_rtt,
 )
 from ._tls_probe import _probe_tls
 
@@ -235,6 +236,7 @@ def check_smtp(
             _check_hash_function(tls_details, result.checks)
             _check_compression(tls_details, result.checks)
             _check_renegotiation(tls_details, result.checks)
+            _check_zero_rtt(host, port, helo_domain, tls_details, result.checks)
             _check_pqc(host, port, result.checks)
 
     _tag(result.checks, tls_start, "TLS")

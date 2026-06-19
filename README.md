@@ -14,7 +14,7 @@ $ mailvalidator check example.com
 ```
 
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-![Tests](https://img.shields.io/badge/tests-698%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-724%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
@@ -89,6 +89,7 @@ probing, ciphers, key exchange, compression, renegotiation, PQC readiness),
 | **TLS compression**      | CVE-2012-4929                          | Deflate/zlib compression enables the CRIME attack                                        |
 | **Secure renegotiation** | RFC 5746                               | Renegotiation Info extension                                                             |
 | **PQC key exchange**     | NSA CNSA 2.0, BSI TR-02102-2, NIST FIPS 203 | ML-KEM hybrid group (X25519MLKEM768 / SecP256r1MLKEM768 / SecP384r1MLKEM1024) detection; requires OpenSSL ≥ 3.0 on the scanning host |
+| **TLS 1.3 0-RTT**        | RFC 8446 §4.2.10, §8                   | Detects `max_early_data_size > 0` in `NewSessionTicket` via `openssl s_client`; early data acceptance exposes SMTP to replay attacks  |
 | **Certificate**          | RFC 5280, RFC 6125                     | Trust chain, public key strength, signature algorithm, SAN/CN domain match, expiry       |
 | **CAA records**          | RFC 8659                               | Issue/issuewild/iodef tags; flags byte; hierarchy walk                                   |
 | **DANE / TLSA**          | RFC 6698, RFC 7671                     | TLSA existence, fingerprint verification, rollover scheme                                |
@@ -402,7 +403,7 @@ pytest tests/checks/test_smtp.py -v
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **698 tests** and achieves **100% coverage** (2 008
+The test suite has **724 tests** and achieves **100% coverage** (2 091
 statements) across all modules. Coverage reporting is pre-configured in
 `pyproject.toml` — no extra flags needed.
 

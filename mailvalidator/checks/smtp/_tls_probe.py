@@ -547,6 +547,66 @@ def _get_group_pyopenssl(
 
 
 # ---------------------------------------------------------------------------
+# 0-RTT (early data) probe via openssl s_client
+# ---------------------------------------------------------------------------
+
+
+def _probe_zero_rtt(host: str, port: int, helo_domain: str) -> bool | None:
+    """Probe whether the server advertises TLS 1.3 early data (0-RTT) via ``openssl s_client``.
+
+    Reads ``Max Early Data:`` from the ``NewSessionTicket`` block printed by
+    ``openssl s_client -starttls smtp``.  Returns ``True`` if the value is > 0
+    (server accepts 0-RTT), ``False`` if TLS 1.3 was negotiated but the field
+    is 0 or absent, and ``None`` when the ``openssl`` binary is unavailable or
+    the probe fails.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :returns: ``True`` = 0-RTT accepted, ``False`` = not accepted, ``None`` = probe unavailable.
+    :rtype: bool or None
+    """
+    import shutil
+    import subprocess
+
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return None
+
+    cmd = [
+        openssl,
+        "s_client",
+        "-connect", f"{host}:{port}",
+        "-starttls", "smtp",
+        "-ign_eof",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=b"QUIT\r\n",
+            capture_output=True,
+            timeout=15,
+        )
+        output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Max Early Data:"):
+                parts = stripped.split(":", 1)
+                try:
+                    return int(parts[1].strip()) > 0
+                except (IndexError, ValueError):
+                    pass
+        if "TLSv1.3" in output or "TLS 1.3" in output:
+            return False
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # TLS probe – collects deep session metadata via STARTTLS
 # ---------------------------------------------------------------------------
 

@@ -29,7 +29,9 @@ from mailvalidator.checks.smtp import (
     _check_key_exchange,
     _check_renegotiation,
     _check_tls_version,
+    _check_zero_rtt,
     _classify_cipher,
+    _probe_zero_rtt,
     _classify_ec_curve,
     _is_ip,
     _make_cipher_probe_ctx,
@@ -2232,3 +2234,131 @@ class TestConnectOrFallback:
         assert smtp is None
         assert err is not None
         mock_cp.assert_called_once_with("mx.example.com", 587)
+
+
+# ── TLS 1.3 0-RTT check ───────────────────────────────────────────────────────
+
+
+class TestZeroRTT:
+    """Tests for _check_zero_rtt."""
+
+    def test_na_when_tls_below_13(self):
+        """Non-TLS-1.3 connection → NA result, probe not called."""
+        details = make_tls(tls_version="TLSv1.2")
+        checks = []
+        _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+        assert len(checks) == 1
+        assert checks[0].name == "TLS 1.3 0-RTT"
+        assert checks[0].status == Status.NA
+
+    def test_warning_when_probe_returns_true(self):
+        """Server accepts 0-RTT → WARNING with replay-attack advisory."""
+        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=True):
+            details = make_tls(tls_version="TLSv1.3")
+            checks = []
+            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+        assert len(checks) == 1
+        assert checks[0].name == "TLS 1.3 0-RTT"
+        assert checks[0].status == Status.WARNING
+        assert checks[0].value == "Accepted"
+
+    def test_good_when_probe_returns_false(self):
+        """Server does not accept 0-RTT → GOOD."""
+        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=False):
+            details = make_tls(tls_version="TLSv1.3")
+            checks = []
+            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+        assert len(checks) == 1
+        assert checks[0].name == "TLS 1.3 0-RTT"
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "Not accepted"
+
+    def test_info_when_probe_returns_none(self):
+        """openssl binary unavailable → INFO with probe-unavailable message."""
+        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=None):
+            details = make_tls(tls_version="TLSv1.3")
+            checks = []
+            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+        assert len(checks) == 1
+        assert checks[0].name == "TLS 1.3 0-RTT"
+        assert checks[0].status == Status.INFO
+        assert checks[0].value == "probe unavailable"
+
+
+# ── _probe_zero_rtt unit tests ────────────────────────────────────────────────
+
+
+class TestProbeZeroRTT:
+    """Unit tests for _probe_zero_rtt — mocks shutil.which and subprocess.run."""
+
+    def test_returns_none_when_openssl_missing(self):
+        """shutil.which returns None → probe returns None without subprocess call."""
+        with patch("shutil.which", return_value=None):
+            result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is None
+
+    def test_returns_true_when_max_early_data_positive(self):
+        """subprocess output contains 'Max Early Data: 16384' → True."""
+        fake_output = b"...TLS handshake...\nMax Early Data: 16384\n..."
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = b""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is True
+
+    def test_returns_false_when_max_early_data_zero(self):
+        """subprocess output contains 'Max Early Data: 0' → False."""
+        fake_output = b"Max Early Data: 0\n"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = b""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is False
+
+    def test_returns_false_when_tls13_but_no_max_early_data(self):
+        """TLSv1.3 negotiated but no Max Early Data line → False."""
+        fake_output = b"Protocol: TLSv1.3\nCipher: TLS_AES_256_GCM_SHA384\n"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = b""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is False
+
+    def test_returns_none_on_timeout(self):
+        """subprocess.TimeoutExpired → None (graceful fallback)."""
+        import subprocess as _subprocess
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch(
+                "subprocess.run",
+                side_effect=_subprocess.TimeoutExpired(cmd="openssl", timeout=15),
+            ):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is None
+
+    def test_returns_none_when_max_early_data_not_parseable(self):
+        """'Max Early Data: notanumber' triggers ValueError branch → continues loop → None."""
+        fake_output = b"Max Early Data: notanumber\n"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = b""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is None
+
+    def test_returns_none_when_no_tls13_marker(self):
+        """No TLS 1.3 marker and no Max Early Data → final return None."""
+        fake_output = b"Protocol: TLSv1.2\nCipher: ECDHE-RSA-AES256-GCM-SHA384\n"
+        mock_proc = MagicMock()
+        mock_proc.stdout = fake_output
+        mock_proc.stderr = b""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc):
+                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+        assert result is None

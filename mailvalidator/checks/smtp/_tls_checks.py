@@ -609,3 +609,76 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
             ],
         )
     )
+
+
+def _check_zero_rtt(
+    host: str,
+    port: int,
+    helo_domain: str,
+    details: TLSDetails,
+    checks: list[CheckResult],
+) -> None:
+    """Check whether the server accepts TLS 1.3 early data (0-RTT / RFC 8446 §2.3).
+
+    Uses ``openssl s_client -starttls smtp`` to read the ``Max Early Data:``
+    field from the ``NewSessionTicket`` message.  When the field is > 0 the
+    server advertises 0-RTT acceptance, which makes it susceptible to replay
+    attacks (RFC 8446 §8).  The check is skipped (``N/A``) when the negotiated
+    TLS version is below 1.3, and reported as ``INFO`` when the ``openssl``
+    binary is not available.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP port.
+    :type port: int
+    :param helo_domain: Domain name to send in the EHLO command.
+    :type helo_domain: str
+    :param details: TLS details object; reads ``tls_version``.
+    :type details: ~mailvalidator.models.TLSDetails
+    :param checks: List to which a :class:`~mailvalidator.models.CheckResult`
+        is appended.
+    :type checks: list[~mailvalidator.models.CheckResult]
+    """
+    from mailvalidator.checks.smtp import _probe_zero_rtt  # noqa: PLC0415
+
+    if details.tls_version != "TLSv1.3":
+        checks.append(
+            CheckResult(
+                name="TLS 1.3 0-RTT",
+                status=Status.NA,
+                value="N/A (TLS < 1.3)",
+            )
+        )
+        return
+
+    accepted = _probe_zero_rtt(host, port, helo_domain)
+    if accepted is None:
+        checks.append(
+            CheckResult(
+                name="TLS 1.3 0-RTT",
+                status=Status.INFO,
+                value="probe unavailable",
+                details=["openssl binary not found; cannot probe for 0-RTT (early data) support."],
+            )
+        )
+    elif accepted:
+        checks.append(
+            CheckResult(
+                name="TLS 1.3 0-RTT",
+                status=Status.WARNING,
+                value="Accepted",
+                details=[
+                    "Server advertises TLS 1.3 early data (0-RTT) via NewSessionTicket. "
+                    "0-RTT is susceptible to replay attacks (RFC 8446 §8). "
+                    "Disable early data on SMTP servers unless anti-replay measures are in place."
+                ],
+            )
+        )
+    else:
+        checks.append(
+            CheckResult(
+                name="TLS 1.3 0-RTT",
+                status=Status.GOOD,
+                value="Not accepted",
+            )
+        )
