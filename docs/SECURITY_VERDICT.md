@@ -477,6 +477,39 @@ defence-in-depth or cause minor deliverability issues.  Multiple MEDIUM findings
 can accumulate enough penalty to affect the grade (14 × MEDIUM = 42 pts = F),
 so they should not be ignored indefinitely.
 
+### TLS 1.3 0-RTT (Early Data)
+
+**What it checks:** Whether the SMTP server advertises acceptance of TLS 1.3
+early data (0-RTT) via the `max_early_data_size` field in its `NewSessionTicket`
+message.  The probe runs `openssl s_client -starttls smtp` and looks for the
+`Max Early Data:` line that OpenSSL prints when the server advertises a non-zero
+value.
+
+**Why MEDIUM:**  
+TLS 1.3 early data (RFC 8446 §4.2.10) allows a client to send data before the
+handshake completes, re-using a pre-shared key (PSK) from a previous session.
+While this reduces latency, it is inherently vulnerable to replay attacks (RFC
+8446 §8): an attacker who can intercept and re-inject a TLS record can cause the
+server to process the same SMTP command twice.  For SMTP this is a limited but
+real risk — a crafted early-data segment could trigger duplicate message
+acceptance or expose command sequences.  The threat is less severe than missing
+STARTTLS or SPF (no plaintext exposure), but accepting 0-RTT without anti-replay
+measures is a best-practice shortfall.
+
+**Status values:**
+- `GOOD` — Server does not advertise early data (0-RTT not accepted).
+- `WARNING` — Server sets `max_early_data_size > 0` in `NewSessionTicket`;
+  0-RTT is accepted and replay attacks are possible.
+- `INFO` — `openssl` binary not found on PATH; probe skipped.
+- `NA` — TLS version is below 1.3; 0-RTT is not applicable.
+
+**Remediation:** Disable `max_early_data_size` in the SMTP server TLS
+configuration (set to `0` in OpenSSL/Postfix/Exim).  If 0-RTT must be enabled,
+implement a server-side replay cache keyed on the early-data nonce as described
+in RFC 8446 §8.2.
+
+---
+
 ### BIMI Record
 
 **What it checks:** A valid BIMI `TXT` record at `default._bimi.<domain>`.

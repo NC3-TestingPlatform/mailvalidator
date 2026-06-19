@@ -21,8 +21,9 @@ from ._tls_checks import (
     _check_key_exchange,
     _check_renegotiation,
     _check_tls_version,
+    _check_zero_rtt,
 )
-from ._tls_probe import _probe_tls
+from ._tls_probe import _probe_openssl_combined, _probe_tls
 
 
 _SMTP_FALLBACK_PORTS: tuple[int, ...] = (587, 465)
@@ -235,7 +236,11 @@ def check_smtp(
             _check_hash_function(tls_details, result.checks)
             _check_compression(tls_details, result.checks)
             _check_renegotiation(tls_details, result.checks)
-            _check_pqc(host, port, result.checks)
+            _probe_ok, _zero_rtt, _negotiated_group = _probe_openssl_combined(
+                host, port, sni_hostname=sni_hostname
+            )
+            _check_zero_rtt(_zero_rtt if _probe_ok else None, tls_details, result.checks)
+            _check_pqc(_negotiated_group, result.checks, probe_available=_probe_ok)
 
     _tag(result.checks, tls_start, "TLS")
 

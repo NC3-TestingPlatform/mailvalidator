@@ -9,7 +9,98 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.2.2] — 2026-06-19
+
+### Changed
+- `checks/smtp/_tls_probe`: `_probe_openssl_combined` now delegates its
+  subprocess invocation to `quantumvalidator.tls_utils.probe_raw` instead of
+  calling `openssl s_client` directly.  The SSRF guard (private/loopback/RFC
+  6598 IP rejection) is retained in mailvalidator.  The vendored
+  `quantumvalidator` is bumped to v0.6.0 which adds `probe_raw`.
+- `checks/smtp/_tls_probe`: Merged the separate `_probe_zero_rtt` and
+  `_assess_pqc` openssl subprocess calls into a single
+  `_probe_openssl_combined` call per MX host.  One `openssl s_client -starttls
+  smtp -ign_eof -groups <PQC_GROUPS>` invocation now captures both
+  `Max Early Data:` (0-RTT) and `Negotiated TLS1.3 group:` (PQC), halving the
+  number of subprocesses and up to halving the extra wall-clock latency per MX
+  host (saved ≤ 10 s per host).
+- `checks/smtp/_tls_checks`: `_check_zero_rtt` now accepts a pre-computed
+  `accepted: bool | None` instead of `(host, port, sni_hostname)`.
+- `checks/smtp/_pqc`: `_check_pqc` now accepts a pre-computed
+  `negotiated_group: str | None` and `probe_available: bool` instead of
+  calling `_assess_pqc` internally; `_assess_pqc` is preserved for direct use.
+
+### Fixed
+- `checks/smtp/_tls_probe`: SSRF guard in `_probe_openssl_combined` now uses
+  `not ip.is_global` instead of the three-predicate check, blocking RFC 6598
+  Shared Address Space (`100.64.0.0/10`) and IPv4 multicast (`224.0.0.0/4`)
+  in addition to the already-blocked private/loopback/link-local ranges.
+- `checks/smtp/_tls_probe`: Replaced magic `timeout=10` literal in the
+  `subprocess.run` call with the `_TIMEOUT` constant imported from
+  `_connection.py`.
+- `checks/smtp/_tls_probe`: `_probe_openssl_combined` docstring now documents
+  the STARTTLS-only constraint (ports 25/587; not suitable for implicit-TLS
+  port 465) and casts `_TIMEOUT` to `float` at the `probe_raw` call site to
+  match the `float`-annotated parameter.
+- `checks/smtp/_tls_probe`: inline comment added to SSRF guard explaining that
+  `not ip.is_global` also covers RFC 6598 shared address space and
+  documentation ranges beyond the RFC 1918/loopback/link-local set.
+- `tests/checks/test_smtp.py`: `TestProbeZeroRTT` and `TestProbeOpenSSLCombined`
+  docstrings now explain why `quantumvalidator.tls_utils.probe_raw` is the
+  correct patch target (function-body import — patching the module attribute
+  intercepts the call; a module-level name does not exist to patch).
+
+---
+
+## [0.2.1] — 2026-06-19
+
+### Fixed
+- `checks/smtp/_tls_probe`: `_probe_zero_rtt` now sends the correct SNI hostname
+  via `openssl s_client -servername`; previously the flag was absent, causing
+  multi-certificate SMTP servers to present the wrong leaf certificate.
+- `checks/smtp/_tls_probe`: Added a private/loopback/link-local IP guard;
+  literal private IP addresses are rejected before the subprocess is spawned,
+  preventing SSRF via attacker-controlled MX records.
+- `checks/smtp/_tls_probe`: TLS 1.3 fallback detection is now scoped to output
+  lines containing both `"Protocol"` and `"TLSv1.3"`, preventing a false `False`
+  result when `"TLSv1.3"` appears only in an error message.  A non-zero
+  `openssl` exit code also suppresses the fallback so partial output from a
+  crashed probe does not produce a misleading "not accepted" verdict.
+- `checks/smtp/_tls_probe`: Removed dead `IndexError` from the `Max Early Data:`
+  parser's except clause; `split(":", 1)` always produces two parts so only
+  `ValueError` is reachable.
+- `checks/smtp/_tls_probe`: Subprocess timeout reduced from 15 s to 10 s to
+  limit worst-case per-MX latency.
+- `checks/smtp/_tls_probe` / `_tls_checks`: Removed dead `helo_domain` parameter;
+  `_probe_zero_rtt` now accepts `sni_hostname` (keyword-only, default `None`) and
+  `_check_zero_rtt` passes it through from the call site in `_check.py`.
+
+### Tests
+- `TestProbeZeroRTT`: added `test_returns_none_on_oserror` — verifies
+  `subprocess.run` raising `OSError` returns `None`.
+- `TestProbeZeroRTT`: added `test_sni_hostname_adds_servername_flag` — verifies
+  that a non-`None` `sni_hostname` inserts `-servername <host>` into the openssl
+  command.
+- `TestProbeZeroRTT`: added `test_returns_none_for_private_ip` — verifies that a
+  private IP address (e.g. `192.168.1.1`) is blocked before the subprocess is
+  spawned.
+
+---
+
+## [0.2.0] — 2026-06-19
+
 ### Added
+- `checks/smtp/_tls_probe`: `_probe_zero_rtt(host, port, helo_domain)` — detects
+  TLS 1.3 early data (0-RTT) support by running `openssl s_client -starttls smtp`
+  and parsing the `Max Early Data:` value from the `NewSessionTicket` block.
+  Returns `True` (0-RTT accepted), `False` (not accepted / TLS 1.3 but no early
+  data), or `None` (openssl binary absent or probe failed).
+- `checks/smtp/_tls_checks`: `_check_zero_rtt(host, port, helo_domain, details,
+  checks)` — emits `WARNING` when `max_early_data_size > 0` (replay-attack risk,
+  RFC 8446 §8), `GOOD` when not accepted, `INFO` when probe unavailable, `NA`
+  for TLS < 1.3.  Registered as `VerdictSeverity.MEDIUM` in `verdict.py`.
 - `checks/smtp/_pqc`: new `_check_pqc_certificate` check — detects whether the
   mail server certificate uses a post-quantum signature algorithm (ML-DSA, SLH-DSA,
   FN-DSA) by parsing the `signatureAlgorithm` OID against NIST FIPS 204/205 and
@@ -163,7 +254,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.5...v0.1.6

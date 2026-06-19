@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from quantumvalidator.assessor import assess
+from quantumvalidator.constants import SAFE_GROUPS
 from quantumvalidator.models import CheckResult as QVCheckResult
 from quantumvalidator.models import QuantumReport
 from quantumvalidator.models import Status as QVStatus
@@ -75,67 +76,68 @@ def _assess_pqc(host: str, port: int, timeout: int = 10) -> QuantumReport:
         return report
 
 
-def _check_pqc(host: str, port: int, checks: list[CheckResult]) -> None:
-    """Probe *host*:*port* for post-quantum hybrid key exchange readiness.
+def _check_pqc(
+    negotiated_group: str | None,
+    checks: list[CheckResult],
+    *,
+    probe_available: bool = True,
+) -> None:
+    """Evaluate post-quantum hybrid key exchange readiness from a pre-computed group.
 
-    Calls :func:`_assess_pqc` (which internally runs ``openssl s_client`` with
-    PQC hybrid groups advertised) and appends a single
-    :class:`~mailvalidator.models.CheckResult` to *checks*.
+    Consumes the *negotiated_group* returned by
+    :func:`~mailvalidator.checks.smtp._tls_probe._probe_openssl_combined` and
+    appends a single :class:`~mailvalidator.models.CheckResult` to *checks*.
 
     Status mapping:
 
-    +---------------------+---------+----------------------------------------+
-    | quantumvalidator    | status  | meaning                                |
-    +=====================+=========+========================================+
-    | SAFE                | GOOD    | PQC hybrid group negotiated            |
-    | UNSAFE              | WARNING | No PQC group; classical key exchange   |
-    | probe error         | INFO    | openssl unavailable or probe failed    |
-    +---------------------+---------+----------------------------------------+
+    +-------------------------------+---------+-------------------------------------+
+    | condition                     | status  | meaning                             |
+    +===============================+=========+=====================================+
+    | group in SAFE_GROUPS          | GOOD    | PQC hybrid group negotiated         |
+    | group not in SAFE_GROUPS      | WARNING | Classical key exchange only         |
+    | probe_available is False      | INFO    | openssl unavailable or SSRF blocked |
+    +-------------------------------+---------+-------------------------------------+
 
-    :param host: Mail server hostname or IP address.
-    :type host: str
-    :param port: SMTP port already in use (25, 587, or 465).
-    :type port: int
-    :param checks: List to which the new
-        :class:`~mailvalidator.models.CheckResult` is appended.
+    :param negotiated_group: TLS 1.3 group name from the combined probe, or ``None``.
+    :type negotiated_group: str or None
+    :param checks: List to which the new :class:`~mailvalidator.models.CheckResult`
+        is appended.
     :type checks: list[~mailvalidator.models.CheckResult]
+    :param probe_available: ``False`` when openssl was not found or the SSRF guard
+        blocked the target; skips the check with ``INFO``.
+    :type probe_available: bool
     """
-    report = _assess_pqc(host, port)
-
-    error_check = next(
-        (c for c in report.checks if c.status == QVStatus.ERROR), None
-    )
-    if error_check:
+    if not probe_available:
         checks.append(
             CheckResult(
                 name="PQC Key Exchange",
                 status=Status.INFO,
                 value="probe unavailable",
-                details=[error_check.reason],
+                details=["openssl binary not found; cannot probe for PQC key exchange."],
             )
         )
         return
 
-    kex_check = next(
-        (c for c in report.checks if c.name == "key_exchange"), None
-    )
-
-    if report.verdict == Verdict.SAFE:
+    if negotiated_group and negotiated_group in SAFE_GROUPS:
         checks.append(
             CheckResult(
                 name="PQC Key Exchange",
                 status=Status.GOOD,
-                value=report.negotiated_group or "safe",
+                value=negotiated_group,
             )
         )
     else:
-        details = [kex_check.reason if kex_check else "No post-quantum hybrid group negotiated."]
+        detail = (
+            f"No post-quantum hybrid group negotiated; got {negotiated_group}. Enable X25519MLKEM768."
+            if negotiated_group
+            else "No post-quantum hybrid group negotiated."
+        )
         checks.append(
             CheckResult(
                 name="PQC Key Exchange",
                 status=Status.WARNING,
-                value=report.negotiated_group or "none",
-                details=details,
+                value=negotiated_group or "none",
+                details=[detail],
             )
         )
 

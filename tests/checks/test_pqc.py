@@ -81,125 +81,80 @@ class TestAssessPqc:
 
 
 class TestCheckPqcSafe:
-    def test_good_status_with_standard(self):
+    def test_good_status_x25519mlkem768(self):
+        """X25519MLKEM768 is in SAFE_GROUPS → GOOD."""
         checks: list = []
-        report = _make_report(
-            Verdict.SAFE,
-            negotiated_group="X25519MLKEM768",
-            checks=[
-                _qv_kex(
-                    QVStatus.PASS,
-                    "X25519MLKEM768",
-                    "PQC hybrid group negotiated (0x11ec).",
-                    "CNSA 2.0, BSI TR-02102-2",
-                )
-            ],
-        )
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
+        _check_pqc("X25519MLKEM768", checks)
         cr = checks[0]
         assert cr.name == "PQC Key Exchange"
         assert cr.status == Status.GOOD
         assert cr.value == "X25519MLKEM768"
         assert cr.details == []
 
-    def test_good_status_no_standard(self):
+    def test_good_status_secp256r1mlkem768(self):
+        """SecP256r1MLKEM768 is in SAFE_GROUPS → GOOD."""
         checks: list = []
-        report = _make_report(
-            Verdict.SAFE,
-            negotiated_group="X25519MLKEM768",
-            checks=[_qv_kex(QVStatus.PASS, "X25519MLKEM768", "PQC group.", standard=None)],
-        )
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
-        cr = checks[0]
-        assert cr.status == Status.GOOD
-        assert cr.details == []
+        _check_pqc("SecP256r1MLKEM768", checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].value == "SecP256r1MLKEM768"
 
-    def test_good_status_no_kex_check_in_report(self):
+    def test_good_status_secp384r1mlkem1024(self):
+        """SecP384r1MLKEM1024 is in SAFE_GROUPS → GOOD."""
         checks: list = []
-        report = _make_report(Verdict.SAFE, negotiated_group="X25519MLKEM768", checks=[])
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
-        cr = checks[0]
-        assert cr.status == Status.GOOD
-        assert cr.value == "X25519MLKEM768"
+        _check_pqc("SecP384r1MLKEM1024", checks)
+        assert checks[0].status == Status.GOOD
 
-    def test_good_status_none_group_fallback(self):
+    def test_probe_available_defaults_to_true(self):
+        """probe_available defaults to True — safe group still yields GOOD."""
         checks: list = []
-        report = _make_report(Verdict.SAFE, negotiated_group=None, checks=[])
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
-        cr = checks[0]
-        assert cr.status == Status.GOOD
-        assert cr.value == "safe"
+        _check_pqc("X25519MLKEM768", checks)
+        assert checks[0].status == Status.GOOD
 
 
 class TestCheckPqcUnsafe:
-    def test_warning_status_with_kex_reason(self):
+    def test_warning_classical_group_with_detail(self):
+        """Classical group (x25519) → WARNING with group name in details."""
         checks: list = []
-        report = _make_report(
-            Verdict.UNSAFE,
-            negotiated_group="x25519",
-            checks=[
-                _qv_kex(
-                    QVStatus.FAIL,
-                    "x25519",
-                    "No PQC hybrid group; got x25519. Enable X25519MLKEM768.",
-                )
-            ],
-        )
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
+        _check_pqc("x25519", checks)
         cr = checks[0]
         assert cr.name == "PQC Key Exchange"
         assert cr.status == Status.WARNING
         assert cr.value == "x25519"
-        assert cr.details == ["No PQC hybrid group; got x25519. Enable X25519MLKEM768."]
+        assert "x25519" in cr.details[0]
 
     def test_warning_none_group(self):
+        """No group negotiated → WARNING with value 'none'."""
         checks: list = []
-        report = _make_report(Verdict.UNSAFE, negotiated_group=None, checks=[])
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
+        _check_pqc(None, checks)
         cr = checks[0]
         assert cr.status == Status.WARNING
         assert cr.value == "none"
+        assert "No post-quantum" in cr.details[0]
 
-    def test_warning_no_kex_check(self):
+    def test_warning_classical_p256_group(self):
+        """P-256 is a classical group → WARNING."""
         checks: list = []
-        report = _make_report(Verdict.UNSAFE, negotiated_group="x25519", checks=[])
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
-        cr = checks[0]
-        assert cr.status == Status.WARNING
-        assert cr.details == ["No post-quantum hybrid group negotiated."]
+        _check_pqc("P-256", checks)
+        assert checks[0].status == Status.WARNING
 
 
 class TestCheckPqcError:
-    def test_info_status_on_error(self):
+    def test_info_when_probe_unavailable(self):
+        """probe_available=False → INFO 'probe unavailable'."""
         checks: list = []
-        report = _make_report(
-            Verdict.UNSAFE,
-            checks=[_qv_error("openssl not found on PATH.")],
-        )
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
+        _check_pqc(None, checks, probe_available=False)
         cr = checks[0]
         assert cr.name == "PQC Key Exchange"
         assert cr.status == Status.INFO
         assert cr.value == "probe unavailable"
-        assert "openssl not found on PATH." in cr.details
+        assert cr.details != []
 
-    def test_info_carries_timeout_reason(self):
+    def test_info_ignores_group_when_probe_unavailable(self):
+        """Even a safe group is ignored when probe_available=False."""
         checks: list = []
-        report = _make_report(
-            Verdict.UNSAFE,
-            checks=[_qv_error("Connection timed out.")],
-        )
-        with patch("mailvalidator.checks.smtp._pqc._assess_pqc", return_value=report):
-            _check_pqc("mail.example.com", 25, checks)
-        assert "Connection timed out." in checks[0].details
+        _check_pqc("X25519MLKEM768", checks, probe_available=False)
+        assert checks[0].status == Status.INFO
+        assert checks[0].value == "probe unavailable"
 
 
 # ---------------------------------------------------------------------------
