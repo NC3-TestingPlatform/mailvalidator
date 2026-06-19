@@ -11,6 +11,49 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.2] — 2026-06-19
+
+### Changed
+- `checks/smtp/_tls_probe`: `_probe_openssl_combined` now delegates its
+  subprocess invocation to `quantumvalidator.tls_utils.probe_raw` instead of
+  calling `openssl s_client` directly.  The SSRF guard (private/loopback/RFC
+  6598 IP rejection) is retained in mailvalidator.  The vendored
+  `quantumvalidator` is bumped to v0.6.0 which adds `probe_raw`.
+- `checks/smtp/_tls_probe`: Merged the separate `_probe_zero_rtt` and
+  `_assess_pqc` openssl subprocess calls into a single
+  `_probe_openssl_combined` call per MX host.  One `openssl s_client -starttls
+  smtp -ign_eof -groups <PQC_GROUPS>` invocation now captures both
+  `Max Early Data:` (0-RTT) and `Negotiated TLS1.3 group:` (PQC), halving the
+  number of subprocesses and up to halving the extra wall-clock latency per MX
+  host (saved ≤ 10 s per host).
+- `checks/smtp/_tls_checks`: `_check_zero_rtt` now accepts a pre-computed
+  `accepted: bool | None` instead of `(host, port, sni_hostname)`.
+- `checks/smtp/_pqc`: `_check_pqc` now accepts a pre-computed
+  `negotiated_group: str | None` and `probe_available: bool` instead of
+  calling `_assess_pqc` internally; `_assess_pqc` is preserved for direct use.
+
+### Fixed
+- `checks/smtp/_tls_probe`: SSRF guard in `_probe_openssl_combined` now uses
+  `not ip.is_global` instead of the three-predicate check, blocking RFC 6598
+  Shared Address Space (`100.64.0.0/10`) and IPv4 multicast (`224.0.0.0/4`)
+  in addition to the already-blocked private/loopback/link-local ranges.
+- `checks/smtp/_tls_probe`: Replaced magic `timeout=10` literal in the
+  `subprocess.run` call with the `_TIMEOUT` constant imported from
+  `_connection.py`.
+- `checks/smtp/_tls_probe`: `_probe_openssl_combined` docstring now documents
+  the STARTTLS-only constraint (ports 25/587; not suitable for implicit-TLS
+  port 465) and casts `_TIMEOUT` to `float` at the `probe_raw` call site to
+  match the `float`-annotated parameter.
+- `checks/smtp/_tls_probe`: inline comment added to SSRF guard explaining that
+  `not ip.is_global` also covers RFC 6598 shared address space and
+  documentation ranges beyond the RFC 1918/loopback/link-local set.
+- `tests/checks/test_smtp.py`: `TestProbeZeroRTT` and `TestProbeOpenSSLCombined`
+  docstrings now explain why `quantumvalidator.tls_utils.probe_raw` is the
+  correct patch target (function-body import — patching the module attribute
+  intercepts the call; a module-level name does not exist to patch).
+
+---
+
 ## [0.2.1] — 2026-06-19
 
 ### Fixed
@@ -211,7 +254,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...v0.1.8

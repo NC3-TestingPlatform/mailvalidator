@@ -59,6 +59,7 @@ from ._tls_probe import (
     _detect_server_cipher_order,
     _enumerate_ciphers_for_version,
     _make_cipher_probe_ctx,
+    _probe_openssl_combined,
     _probe_single_tls_version,
     _probe_zero_rtt,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "_check_zero_rtt",
     "_fetch_cert_der",
     "_parse_caa_record",
+    "_probe_openssl_combined",
     "_probe_single_tls_version",
     "_probe_zero_rtt",
     "_set_sni",

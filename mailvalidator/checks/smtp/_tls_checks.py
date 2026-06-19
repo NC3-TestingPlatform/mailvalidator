@@ -612,35 +612,29 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
 
 
 def _check_zero_rtt(
-    host: str,
-    port: int,
-    sni_hostname: str | None,
+    accepted: bool | None,
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
     """Check whether the server accepts TLS 1.3 early data (0-RTT / RFC 8446 §2.3).
 
-    Uses ``openssl s_client -starttls smtp`` to read the ``Max Early Data:``
-    field from the ``NewSessionTicket`` message.  When the field is > 0 the
-    server advertises 0-RTT acceptance, which makes it susceptible to replay
-    attacks (RFC 8446 §8).  The check is skipped (``N/A``) when the negotiated
-    TLS version is below 1.3, and reported as ``INFO`` when the ``openssl``
-    binary is not available.
+    Evaluates the pre-computed *accepted* value from
+    :func:`~mailvalidator.checks.smtp._tls_probe._probe_openssl_combined`.
+    When the field is ``True`` the server advertises 0-RTT acceptance, which
+    makes it susceptible to replay attacks (RFC 8446 §8).  The check is
+    skipped (``N/A``) when the negotiated TLS version is below 1.3, and
+    reported as ``INFO`` when the combined probe was unavailable (*accepted*
+    is ``None``).
 
-    :param host: Mail server hostname or IP address.
-    :type host: str
-    :param port: SMTP port.
-    :type port: int
-    :param sni_hostname: Hostname for the TLS SNI extension passed to the probe.
-    :type sni_hostname: str or None
+    :param accepted: ``True`` = server accepts 0-RTT, ``False`` = not accepted,
+        ``None`` = probe unavailable (openssl absent or SSRF guard blocked).
+    :type accepted: bool or None
     :param details: TLS details object; reads ``tls_version``.
     :type details: ~mailvalidator.models.TLSDetails
     :param checks: List to which a :class:`~mailvalidator.models.CheckResult`
         is appended.
     :type checks: list[~mailvalidator.models.CheckResult]
     """
-    from mailvalidator.checks.smtp import _probe_zero_rtt  # noqa: PLC0415
-
     if details.tls_version != "TLSv1.3":
         checks.append(
             CheckResult(
@@ -651,7 +645,6 @@ def _check_zero_rtt(
         )
         return
 
-    accepted = _probe_zero_rtt(host, port, sni_hostname=sni_hostname)
     if accepted is None:
         checks.append(
             CheckResult(

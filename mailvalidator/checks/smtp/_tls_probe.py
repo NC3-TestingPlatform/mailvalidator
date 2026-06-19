@@ -547,76 +547,105 @@ def _get_group_pyopenssl(
 
 
 # ---------------------------------------------------------------------------
-# 0-RTT (early data) probe via openssl s_client
+# 0-RTT (early data) + PQC group combined probe via openssl s_client
 # ---------------------------------------------------------------------------
 
 
-def _probe_zero_rtt(host: str, port: int, *, sni_hostname: str | None = None) -> bool | None:
-    """Probe whether the server advertises TLS 1.3 early data (0-RTT) via ``openssl s_client``.
+def _probe_openssl_combined(
+    host: str,
+    port: int,
+    *,
+    sni_hostname: str | None = None,
+) -> tuple[bool, bool | None, str | None]:
+    """Single ``openssl s_client`` probe that extracts both 0-RTT and PQC group.
 
-    Reads ``Max Early Data:`` from the ``NewSessionTicket`` block printed by
-    ``openssl s_client -starttls smtp``.  Returns ``True`` if the value is > 0
-    (server accepts 0-RTT), ``False`` if TLS 1.3 was negotiated but the field
-    is 0 or absent, and ``None`` when the ``openssl`` binary is unavailable or
-    the probe fails.
+    Runs one ``openssl s_client -starttls smtp -ign_eof -groups <PQC_GROUPS>``
+    subprocess and parses ``Max Early Data:`` (0-RTT) and
+    ``Negotiated TLS1.3 group:`` (PQC key exchange) from the combined output.
+    This replaces two separate subprocess calls that were previously required.
+
+    .. warning::
+        This probe uses ``-starttls smtp`` and is only suitable for
+        STARTTLS-capable ports (25, 587).  Do not call it for implicit-TLS
+        port 465 — the server speaks TLS immediately and will not emit an
+        SMTP banner, causing the probe to time out and return ``None``.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param port: SMTP STARTTLS port (25 or 587).
+    :type port: int
+    :param sni_hostname: Hostname for the TLS SNI extension (``-servername`` flag).
+    :type sni_hostname: str or None
+    :returns: ``(probe_available, zero_rtt_accepted, negotiated_group)`` where
+        *probe_available* is ``False`` when openssl is absent or SSRF guard
+        blocks the host; *zero_rtt_accepted* is ``True`` / ``False`` when TLS 1.3
+        was negotiated and ``None`` otherwise; *negotiated_group* is the TLS 1.3
+        group name or ``None``.
+    :rtype: tuple[bool, bool | None, str | None]
+    """
+    import ipaddress
+
+    from quantumvalidator.tls_utils import probe_raw
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            # not ip.is_global covers RFC 1918/loopback/link-local AND
+            # RFC 6598 shared address space (100.64/10) + documentation ranges
+            return False, None, None
+    except ValueError:
+        pass
+
+    output = probe_raw(host, port, starttls="smtp", sni_hostname=sni_hostname, timeout=float(_TIMEOUT))
+    if output is None:
+        return False, None, None
+
+    zero_rtt: bool | None = None
+    negotiated_group: str | None = None
+    tls13_seen = False
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if "TLSv1.3" in stripped and "Protocol" in stripped:
+            tls13_seen = True
+        if stripped.startswith("Max Early Data:"):
+            parts = stripped.split(":", 1)
+            try:
+                zero_rtt = int(parts[1].strip()) > 0
+            except ValueError:
+                pass
+        if stripped.startswith("Negotiated TLS1.3 group:"):
+            parts = stripped.split(":", 1)
+            negotiated_group = parts[1].strip() if len(parts) > 1 else None
+
+    # TLS 1.3 negotiated but server did not send NewSessionTicket with early data
+    if zero_rtt is None and tls13_seen:
+        zero_rtt = False
+
+    return True, zero_rtt, negotiated_group
+
+
+def _probe_zero_rtt(host: str, port: int, *, sni_hostname: str | None = None) -> bool | None:
+    """Probe whether the server advertises TLS 1.3 early data (0-RTT).
+
+    Thin wrapper around :func:`_probe_openssl_combined` retained for backward
+    compatibility.  Returns ``True`` if 0-RTT is accepted, ``False`` if TLS 1.3
+    was negotiated but early data is not offered, and ``None`` when the probe
+    is unavailable or the host is blocked by the SSRF guard.
 
     :param host: Mail server hostname or IP address.
     :type host: str
     :param port: SMTP port.
     :type port: int
-    :param sni_hostname: Hostname for the TLS SNI extension (``-servername`` flag).
-        When *None* the flag is omitted and the server uses its default certificate.
+    :param sni_hostname: Hostname for the TLS SNI extension.
     :type sni_hostname: str or None
     :returns: ``True`` = 0-RTT accepted, ``False`` = not accepted, ``None`` = probe unavailable.
     :rtype: bool or None
     """
-    import ipaddress
-    import shutil
-    import subprocess
-
-    openssl = shutil.which("openssl")
-    if not openssl:
+    probe_ok, zero_rtt, _ = _probe_openssl_combined(host, port, sni_hostname=sni_hostname)
+    if not probe_ok:
         return None
-
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            return None
-    except ValueError:
-        pass
-
-    cmd = [
-        openssl,
-        "s_client",
-        "-connect", f"{host}:{port}",
-        "-starttls", "smtp",
-        "-ign_eof",
-    ]
-    if sni_hostname:
-        cmd += ["-servername", sni_hostname]
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=b"QUIT\r\n",
-            capture_output=True,
-            timeout=10,
-        )
-        output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-        for line in output.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("Max Early Data:"):
-                parts = stripped.split(":", 1)
-                try:
-                    return int(parts[1].strip()) > 0
-                except ValueError:
-                    pass
-        if proc.returncode == 0 and any(
-            "TLSv1.3" in ln and "Protocol" in ln for ln in output.splitlines()
-        ):
-            return False
-        return None
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
+    return zero_rtt
 
 
 # ---------------------------------------------------------------------------

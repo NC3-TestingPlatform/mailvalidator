@@ -31,6 +31,7 @@ from mailvalidator.checks.smtp import (
     _check_tls_version,
     _check_zero_rtt,
     _classify_cipher,
+    _probe_openssl_combined,
     _probe_zero_rtt,
     _classify_ec_curve,
     _is_ip,
@@ -2243,42 +2244,39 @@ class TestZeroRTT:
     """Tests for _check_zero_rtt."""
 
     def test_na_when_tls_below_13(self):
-        """Non-TLS-1.3 connection → NA result, probe not called."""
+        """Non-TLS-1.3 connection → NA result regardless of accepted value."""
         details = make_tls(tls_version="TLSv1.2")
         checks = []
-        _check_zero_rtt("mx.example.com", 25, None, details, checks)
+        _check_zero_rtt(None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.NA
 
-    def test_warning_when_probe_returns_true(self):
+    def test_warning_when_accepted_true(self):
         """Server accepts 0-RTT → WARNING with replay-attack advisory."""
-        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=True):
-            details = make_tls(tls_version="TLSv1.3")
-            checks = []
-            _check_zero_rtt("mx.example.com", 25, None, details, checks)
+        details = make_tls(tls_version="TLSv1.3")
+        checks = []
+        _check_zero_rtt(True, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.WARNING
         assert checks[0].value == "Accepted"
 
-    def test_good_when_probe_returns_false(self):
+    def test_good_when_accepted_false(self):
         """Server does not accept 0-RTT → GOOD."""
-        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=False):
-            details = make_tls(tls_version="TLSv1.3")
-            checks = []
-            _check_zero_rtt("mx.example.com", 25, None, details, checks)
+        details = make_tls(tls_version="TLSv1.3")
+        checks = []
+        _check_zero_rtt(False, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.GOOD
         assert checks[0].value == "Not accepted"
 
-    def test_info_when_probe_returns_none(self):
-        """openssl binary unavailable → INFO with probe-unavailable message."""
-        with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=None):
-            details = make_tls(tls_version="TLSv1.3")
-            checks = []
-            _check_zero_rtt("mx.example.com", 25, None, details, checks)
+    def test_info_when_accepted_none(self):
+        """Probe unavailable (accepted=None, TLS 1.3) → INFO with probe-unavailable message."""
+        details = make_tls(tls_version="TLSv1.3")
+        checks = []
+        _check_zero_rtt(None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.INFO
@@ -2289,106 +2287,160 @@ class TestZeroRTT:
 
 
 class TestProbeZeroRTT:
-    """Unit tests for _probe_zero_rtt — mocks shutil.which and subprocess.run."""
+    """Unit tests for _probe_zero_rtt — mocks quantumvalidator.tls_utils.probe_raw.
+
+    Patch target rationale: _probe_openssl_combined imports probe_raw inside
+    the function body (``from quantumvalidator.tls_utils import probe_raw``).
+    Python resolves that to the module attribute at call time, so patching
+    ``quantumvalidator.tls_utils.probe_raw`` correctly intercepts the call.
+    Patching ``mailvalidator.checks.smtp._tls_probe.probe_raw`` would not
+    work because that name does not exist at module level.
+    """
 
     def test_returns_none_when_openssl_missing(self):
-        """shutil.which returns None → probe returns None without subprocess call."""
-        with patch("shutil.which", return_value=None):
+        """probe_raw returns None (openssl absent) → _probe_zero_rtt returns None."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None):
             result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_true_when_max_early_data_positive(self):
-        """subprocess output contains 'Max Early Data: 16384' → True."""
-        fake_output = b"...TLS handshake...\nMax Early Data: 16384\n..."
-        mock_proc = MagicMock()
-        mock_proc.stdout = fake_output
-        mock_proc.stderr = b""
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        """probe_raw output contains 'Max Early Data: 16384' → True."""
+        fake_output = "...TLS handshake...\nProtocol: TLSv1.3\nMax Early Data: 16384\n..."
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=fake_output):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is True
 
     def test_returns_false_when_max_early_data_zero(self):
-        """subprocess output contains 'Max Early Data: 0' → False."""
-        fake_output = b"Max Early Data: 0\n"
-        mock_proc = MagicMock()
-        mock_proc.stdout = fake_output
-        mock_proc.stderr = b""
-        mock_proc.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        """probe_raw output contains 'Max Early Data: 0' → False."""
+        fake_output = "Protocol: TLSv1.3\nMax Early Data: 0\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=fake_output):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is False
 
     def test_returns_false_when_tls13_but_no_max_early_data(self):
         """TLSv1.3 negotiated but no Max Early Data line → False."""
-        fake_output = b"Protocol: TLSv1.3\nCipher: TLS_AES_256_GCM_SHA384\n"
-        mock_proc = MagicMock()
-        mock_proc.stdout = fake_output
-        mock_proc.stderr = b""
-        mock_proc.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        fake_output = "Protocol: TLSv1.3\nCipher: TLS_AES_256_GCM_SHA384\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=fake_output):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is False
 
     def test_returns_none_on_timeout(self):
-        """subprocess.TimeoutExpired → None (graceful fallback)."""
-        import subprocess as _subprocess
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch(
-                "subprocess.run",
-                side_effect=_subprocess.TimeoutExpired(cmd="openssl", timeout=15),
-            ):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        """probe_raw returns None on timeout → None."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_none_when_max_early_data_not_parseable(self):
         """'Max Early Data: notanumber' triggers ValueError branch → continues loop → None."""
-        fake_output = b"Max Early Data: notanumber\n"
-        mock_proc = MagicMock()
-        mock_proc.stdout = fake_output
-        mock_proc.stderr = b""
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        fake_output = "Max Early Data: notanumber\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=fake_output):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_none_when_no_tls13_marker(self):
         """No TLS 1.3 marker and no Max Early Data → final return None."""
-        fake_output = b"Protocol: TLSv1.2\nCipher: ECDHE-RSA-AES256-GCM-SHA384\n"
-        mock_proc = MagicMock()
-        mock_proc.stdout = fake_output
-        mock_proc.stderr = b""
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        fake_output = "Protocol: TLSv1.2\nCipher: ECDHE-RSA-AES256-GCM-SHA384\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=fake_output):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_none_on_oserror(self):
-        """subprocess.run raises OSError → None (graceful fallback)."""
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", side_effect=OSError("connection refused")):
-                result = _probe_zero_rtt("mx.example.com", 25)
+        """probe_raw returns None on OSError → None."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None):
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
-    def test_sni_hostname_adds_servername_flag(self):
-        """sni_hostname is forwarded as -servername to the openssl command."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = b""
-        mock_proc.stderr = b""
-        mock_proc.returncode = 1
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run", return_value=mock_proc) as mock_run:
-                _probe_zero_rtt("mx.example.com", 25, sni_hostname="mx.example.com")
-        cmd = mock_run.call_args[0][0]
-        assert "-servername" in cmd
-        assert "mx.example.com" in cmd
+    def test_sni_hostname_forwarded_to_probe_raw(self):
+        """sni_hostname is forwarded as sni_hostname kwarg to probe_raw."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None) as mock_raw:
+            _probe_zero_rtt("mx.example.com", 25, sni_hostname="mx.example.com")
+        mock_raw.assert_called_once()
+        _, kwargs = mock_raw.call_args
+        assert kwargs.get("sni_hostname") == "mx.example.com"
 
     def test_returns_none_for_private_ip(self):
-        """Private/loopback IP address is rejected before subprocess is spawned."""
-        with patch("shutil.which", return_value="/usr/bin/openssl"):
-            with patch("subprocess.run") as mock_run:
-                result = _probe_zero_rtt("192.168.1.1", 25)
+        """Private/loopback IP address is rejected by SSRF guard before probe_raw is called."""
+        with patch("quantumvalidator.tls_utils.probe_raw") as mock_raw:
+            result = _probe_zero_rtt("192.168.1.1", 25)
         assert result is None
-        mock_run.assert_not_called()
+        mock_raw.assert_not_called()
+
+
+# ── _probe_openssl_combined unit tests ───────────────────────────────────────
+
+
+class TestProbeOpenSSLCombined:
+    """Unit tests for _probe_openssl_combined — mocks quantumvalidator.tls_utils.probe_raw.
+
+    See TestProbeZeroRTT for patch target rationale.
+    """
+
+    def test_returns_false_none_none_when_openssl_missing(self):
+        """probe_raw returns None (openssl absent) → (False, None, None)."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (False, None, None)
+
+    def test_returns_false_none_none_for_private_ip(self):
+        """Private IP is blocked by SSRF guard before probe_raw is called."""
+        with patch("quantumvalidator.tls_utils.probe_raw") as mock_raw:
+            result = _probe_openssl_combined("192.168.1.1", 25)
+        assert result == (False, None, None)
+        mock_raw.assert_not_called()
+
+    def test_returns_false_none_none_for_rfc6598_ip(self):
+        """RFC 6598 carrier-grade NAT (100.64.0.0/10) is blocked by SSRF guard."""
+        with patch("quantumvalidator.tls_utils.probe_raw") as mock_raw:
+            result = _probe_openssl_combined("100.64.1.1", 25)
+        assert result == (False, None, None)
+        mock_raw.assert_not_called()
+
+    def test_returns_true_true_group_when_zero_rtt_and_pqc(self):
+        """Max Early Data > 0 and Negotiated TLS1.3 group → (True, True, group)."""
+        output = (
+            "Protocol: TLSv1.3\n"
+            "Negotiated TLS1.3 group: X25519MLKEM768\n"
+            "Max Early Data: 16384\n"
+        )
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=output):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (True, True, "X25519MLKEM768")
+
+    def test_returns_true_false_group_when_no_early_data(self):
+        """Max Early Data: 0 and group present → (True, False, group)."""
+        output = (
+            "Protocol: TLSv1.3\n"
+            "Negotiated TLS1.3 group: X25519MLKEM768\n"
+            "Max Early Data: 0\n"
+        )
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=output):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (True, False, "X25519MLKEM768")
+
+    def test_returns_true_false_none_when_tls13_no_ticket(self):
+        """TLS 1.3 negotiated but no Max Early Data line → zero_rtt=False, group=None."""
+        output = "Protocol: TLSv1.3\nCipher: TLS_AES_256_GCM_SHA384\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=output):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (True, False, None)
+
+    def test_returns_true_none_none_when_no_tls13_marker(self):
+        """TLS 1.2 output — no TLS 1.3 marker → zero_rtt=None."""
+        output = "Protocol: TLSv1.2\nCipher: ECDHE-RSA-AES256-GCM-SHA384\n"
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=output):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (True, None, None)
+
+    def test_returns_false_none_none_on_timeout(self):
+        """probe_raw returns None on timeout → (False, None, None)."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None):
+            result = _probe_openssl_combined("mx.example.com", 25)
+        assert result == (False, None, None)
+
+    def test_sni_hostname_forwarded_to_probe_raw(self):
+        """sni_hostname is forwarded as sni_hostname kwarg to probe_raw."""
+        with patch("quantumvalidator.tls_utils.probe_raw", return_value=None) as mock_raw:
+            _probe_openssl_combined("mx.example.com", 25, sni_hostname="mail.example.com")
+        mock_raw.assert_called_once()
+        _, kwargs = mock_raw.call_args
+        assert kwargs.get("sni_hostname") == "mail.example.com"
