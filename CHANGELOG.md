@@ -11,6 +11,16 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.3] — 2026-06-19
+
+### Fixed
+- Bumped `vendor/quantumvalidator` submodule to v0.6.0 so that
+  `quantumvalidator.tls_utils.probe_raw` is present at runtime.  The prior
+  vendor pointer (v0.5.2) caused an `ImportError` when running
+  `mailvalidator check <domain>`.
+
+---
+
 ## [0.2.2] — 2026-06-19
 
 ### Changed
@@ -255,6 +265,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ---
 
 [Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...v0.2.0
