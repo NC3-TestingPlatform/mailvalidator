@@ -236,7 +236,7 @@ def check_smtp(
             _check_hash_function(tls_details, result.checks)
             _check_compression(tls_details, result.checks)
             _check_renegotiation(tls_details, result.checks)
-            _check_zero_rtt(host, port, helo_domain, tls_details, result.checks)
+            _check_zero_rtt(host, port, sni_hostname, tls_details, result.checks)
             _check_pqc(host, port, result.checks)
 
     _tag(result.checks, tls_start, "TLS")

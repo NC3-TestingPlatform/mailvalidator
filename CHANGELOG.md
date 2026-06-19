@@ -11,6 +11,41 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.1] — 2026-06-19
+
+### Fixed
+- `checks/smtp/_tls_probe`: `_probe_zero_rtt` now sends the correct SNI hostname
+  via `openssl s_client -servername`; previously the flag was absent, causing
+  multi-certificate SMTP servers to present the wrong leaf certificate.
+- `checks/smtp/_tls_probe`: Added a private/loopback/link-local IP guard;
+  literal private IP addresses are rejected before the subprocess is spawned,
+  preventing SSRF via attacker-controlled MX records.
+- `checks/smtp/_tls_probe`: TLS 1.3 fallback detection is now scoped to output
+  lines containing both `"Protocol"` and `"TLSv1.3"`, preventing a false `False`
+  result when `"TLSv1.3"` appears only in an error message.  A non-zero
+  `openssl` exit code also suppresses the fallback so partial output from a
+  crashed probe does not produce a misleading "not accepted" verdict.
+- `checks/smtp/_tls_probe`: Removed dead `IndexError` from the `Max Early Data:`
+  parser's except clause; `split(":", 1)` always produces two parts so only
+  `ValueError` is reachable.
+- `checks/smtp/_tls_probe`: Subprocess timeout reduced from 15 s to 10 s to
+  limit worst-case per-MX latency.
+- `checks/smtp/_tls_probe` / `_tls_checks`: Removed dead `helo_domain` parameter;
+  `_probe_zero_rtt` now accepts `sni_hostname` (keyword-only, default `None`) and
+  `_check_zero_rtt` passes it through from the call site in `_check.py`.
+
+### Tests
+- `TestProbeZeroRTT`: added `test_returns_none_on_oserror` — verifies
+  `subprocess.run` raising `OSError` returns `None`.
+- `TestProbeZeroRTT`: added `test_sni_hostname_adds_servername_flag` — verifies
+  that a non-`None` `sni_hostname` inserts `-servername <host>` into the openssl
+  command.
+- `TestProbeZeroRTT`: added `test_returns_none_for_private_ip` — verifies that a
+  private IP address (e.g. `192.168.1.1`) is blocked before the subprocess is
+  spawned.
+
+---
+
 ## [0.2.0] — 2026-06-19
 
 ### Added
@@ -176,7 +211,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.1.6...v0.1.7

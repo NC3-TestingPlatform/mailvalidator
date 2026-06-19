@@ -14,7 +14,7 @@ $ mailvalidator check example.com
 ```
 
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-![Tests](https://img.shields.io/badge/tests-724%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-727%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
@@ -403,7 +403,7 @@ pytest tests/checks/test_smtp.py -v
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **724 tests** and achieves **100% coverage** (2 091
+The test suite has **727 tests** and achieves **100% coverage** (2 091
 statements) across all modules. Coverage reporting is pre-configured in
 `pyproject.toml` — no extra flags needed.
 

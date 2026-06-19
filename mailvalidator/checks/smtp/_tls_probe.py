@@ -551,7 +551,7 @@ def _get_group_pyopenssl(
 # ---------------------------------------------------------------------------
 
 
-def _probe_zero_rtt(host: str, port: int, helo_domain: str) -> bool | None:
+def _probe_zero_rtt(host: str, port: int, *, sni_hostname: str | None = None) -> bool | None:
     """Probe whether the server advertises TLS 1.3 early data (0-RTT) via ``openssl s_client``.
 
     Reads ``Max Early Data:`` from the ``NewSessionTicket`` block printed by
@@ -564,17 +564,26 @@ def _probe_zero_rtt(host: str, port: int, helo_domain: str) -> bool | None:
     :type host: str
     :param port: SMTP port.
     :type port: int
-    :param helo_domain: Domain name to send in the EHLO command.
-    :type helo_domain: str
+    :param sni_hostname: Hostname for the TLS SNI extension (``-servername`` flag).
+        When *None* the flag is omitted and the server uses its default certificate.
+    :type sni_hostname: str or None
     :returns: ``True`` = 0-RTT accepted, ``False`` = not accepted, ``None`` = probe unavailable.
     :rtype: bool or None
     """
+    import ipaddress
     import shutil
     import subprocess
 
     openssl = shutil.which("openssl")
     if not openssl:
         return None
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return None
+    except ValueError:
+        pass
 
     cmd = [
         openssl,
@@ -583,12 +592,14 @@ def _probe_zero_rtt(host: str, port: int, helo_domain: str) -> bool | None:
         "-starttls", "smtp",
         "-ign_eof",
     ]
+    if sni_hostname:
+        cmd += ["-servername", sni_hostname]
     try:
         proc = subprocess.run(
             cmd,
             input=b"QUIT\r\n",
             capture_output=True,
-            timeout=15,
+            timeout=10,
         )
         output = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
         for line in output.splitlines():
@@ -597,9 +608,11 @@ def _probe_zero_rtt(host: str, port: int, helo_domain: str) -> bool | None:
                 parts = stripped.split(":", 1)
                 try:
                     return int(parts[1].strip()) > 0
-                except (IndexError, ValueError):
+                except ValueError:
                     pass
-        if "TLSv1.3" in output or "TLS 1.3" in output:
+        if proc.returncode == 0 and any(
+            "TLSv1.3" in ln and "Protocol" in ln for ln in output.splitlines()
+        ):
             return False
         return None
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

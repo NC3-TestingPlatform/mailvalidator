@@ -614,7 +614,7 @@ def _check_renegotiation(details: TLSDetails, checks: list[CheckResult]) -> None
 def _check_zero_rtt(
     host: str,
     port: int,
-    helo_domain: str,
+    sni_hostname: str | None,
     details: TLSDetails,
     checks: list[CheckResult],
 ) -> None:
@@ -631,8 +631,8 @@ def _check_zero_rtt(
     :type host: str
     :param port: SMTP port.
     :type port: int
-    :param helo_domain: Domain name to send in the EHLO command.
-    :type helo_domain: str
+    :param sni_hostname: Hostname for the TLS SNI extension passed to the probe.
+    :type sni_hostname: str or None
     :param details: TLS details object; reads ``tls_version``.
     :type details: ~mailvalidator.models.TLSDetails
     :param checks: List to which a :class:`~mailvalidator.models.CheckResult`
@@ -651,7 +651,7 @@ def _check_zero_rtt(
         )
         return
 
-    accepted = _probe_zero_rtt(host, port, helo_domain)
+    accepted = _probe_zero_rtt(host, port, sni_hostname=sni_hostname)
     if accepted is None:
         checks.append(
             CheckResult(

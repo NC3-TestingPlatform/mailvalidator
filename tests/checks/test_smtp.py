@@ -2246,7 +2246,7 @@ class TestZeroRTT:
         """Non-TLS-1.3 connection → NA result, probe not called."""
         details = make_tls(tls_version="TLSv1.2")
         checks = []
-        _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+        _check_zero_rtt("mx.example.com", 25, None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.NA
@@ -2256,7 +2256,7 @@ class TestZeroRTT:
         with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=True):
             details = make_tls(tls_version="TLSv1.3")
             checks = []
-            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+            _check_zero_rtt("mx.example.com", 25, None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.WARNING
@@ -2267,7 +2267,7 @@ class TestZeroRTT:
         with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=False):
             details = make_tls(tls_version="TLSv1.3")
             checks = []
-            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+            _check_zero_rtt("mx.example.com", 25, None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.GOOD
@@ -2278,7 +2278,7 @@ class TestZeroRTT:
         with patch("mailvalidator.checks.smtp._probe_zero_rtt", return_value=None):
             details = make_tls(tls_version="TLSv1.3")
             checks = []
-            _check_zero_rtt("mx.example.com", 25, "mailvalidator.local", details, checks)
+            _check_zero_rtt("mx.example.com", 25, None, details, checks)
         assert len(checks) == 1
         assert checks[0].name == "TLS 1.3 0-RTT"
         assert checks[0].status == Status.INFO
@@ -2294,7 +2294,7 @@ class TestProbeZeroRTT:
     def test_returns_none_when_openssl_missing(self):
         """shutil.which returns None → probe returns None without subprocess call."""
         with patch("shutil.which", return_value=None):
-            result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+            result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_true_when_max_early_data_positive(self):
@@ -2305,7 +2305,7 @@ class TestProbeZeroRTT:
         mock_proc.stderr = b""
         with patch("shutil.which", return_value="/usr/bin/openssl"):
             with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is True
 
     def test_returns_false_when_max_early_data_zero(self):
@@ -2314,9 +2314,10 @@ class TestProbeZeroRTT:
         mock_proc = MagicMock()
         mock_proc.stdout = fake_output
         mock_proc.stderr = b""
+        mock_proc.returncode = 0
         with patch("shutil.which", return_value="/usr/bin/openssl"):
             with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is False
 
     def test_returns_false_when_tls13_but_no_max_early_data(self):
@@ -2325,9 +2326,10 @@ class TestProbeZeroRTT:
         mock_proc = MagicMock()
         mock_proc.stdout = fake_output
         mock_proc.stderr = b""
+        mock_proc.returncode = 0
         with patch("shutil.which", return_value="/usr/bin/openssl"):
             with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is False
 
     def test_returns_none_on_timeout(self):
@@ -2338,7 +2340,7 @@ class TestProbeZeroRTT:
                 "subprocess.run",
                 side_effect=_subprocess.TimeoutExpired(cmd="openssl", timeout=15),
             ):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_none_when_max_early_data_not_parseable(self):
@@ -2349,7 +2351,7 @@ class TestProbeZeroRTT:
         mock_proc.stderr = b""
         with patch("shutil.which", return_value="/usr/bin/openssl"):
             with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
 
     def test_returns_none_when_no_tls13_marker(self):
@@ -2360,5 +2362,33 @@ class TestProbeZeroRTT:
         mock_proc.stderr = b""
         with patch("shutil.which", return_value="/usr/bin/openssl"):
             with patch("subprocess.run", return_value=mock_proc):
-                result = _probe_zero_rtt("mx.example.com", 25, "mailvalidator.local")
+                result = _probe_zero_rtt("mx.example.com", 25)
         assert result is None
+
+    def test_returns_none_on_oserror(self):
+        """subprocess.run raises OSError → None (graceful fallback)."""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", side_effect=OSError("connection refused")):
+                result = _probe_zero_rtt("mx.example.com", 25)
+        assert result is None
+
+    def test_sni_hostname_adds_servername_flag(self):
+        """sni_hostname is forwarded as -servername to the openssl command."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = b""
+        mock_proc.stderr = b""
+        mock_proc.returncode = 1
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run", return_value=mock_proc) as mock_run:
+                _probe_zero_rtt("mx.example.com", 25, sni_hostname="mx.example.com")
+        cmd = mock_run.call_args[0][0]
+        assert "-servername" in cmd
+        assert "mx.example.com" in cmd
+
+    def test_returns_none_for_private_ip(self):
+        """Private/loopback IP address is rejected before subprocess is spawned."""
+        with patch("shutil.which", return_value="/usr/bin/openssl"):
+            with patch("subprocess.run") as mock_run:
+                result = _probe_zero_rtt("192.168.1.1", 25)
+        assert result is None
+        mock_run.assert_not_called()
