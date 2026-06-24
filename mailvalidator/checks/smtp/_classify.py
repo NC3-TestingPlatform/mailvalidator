@@ -24,6 +24,7 @@ _GOOD_CIPHERS: frozenset[str] = frozenset(
         "TLS_AES_256_GCM_SHA384",
         "TLS_CHACHA20_POLY1305_SHA256",
         "TLS_AES_128_GCM_SHA256",
+        "TLS_AES_128_CCM_SHA256",      # RFC 8446 §B.4; full 16-byte tag (BSI TR-02102-2)
         # TLS 1.2 – ECDHE-ECDSA + AEAD
         "ECDHE-ECDSA-AES256-GCM-SHA384",
         "ECDHE-ECDSA-CHACHA20-POLY1305",
@@ -108,16 +109,18 @@ def _tls_version_status(version: str) -> Status:
     :type version: str
     :returns: :attr:`~mailvalidator.models.Status.OK` for TLS 1.3,
         :attr:`~mailvalidator.models.Status.SUFFICIENT` for TLS 1.2,
-        :attr:`~mailvalidator.models.Status.PHASE_OUT` for TLS 1.0/1.1,
-        :attr:`~mailvalidator.models.Status.INSUFFICIENT` otherwise.
+        :attr:`~mailvalidator.models.Status.INSUFFICIENT` for TLS 1.0/1.1
+        (RFC 8996 §3 MUST NOT negotiate; BSI TR-02102-2 §3 "no longer permitted")
+        or any other version string.
     :rtype: ~mailvalidator.models.Status
     """
     if version == "TLSv1.3":
         return Status.OK
     if version == "TLSv1.2":
         return Status.SUFFICIENT
-    if version in ("TLSv1.1", "TLSv1"):
-        return Status.PHASE_OUT
+    # RFC 8996 (BCP) and BSI TR-02102-2 both prohibit TLS 1.0/1.1.
+    # NCSC-NL TLS v2.1 calls these "Phase-out", but the stricter RFC 8996
+    # "MUST NOT negotiate" language is used here to avoid underselling the risk.
     return Status.INSUFFICIENT
 
 
@@ -144,6 +147,7 @@ _GOOD_EC_CURVES: frozenset[str] = frozenset(
         "secp256r1",
         "prime256v1",  # same curve, two OpenSSL names
         "secp384r1",
+        "secp521r1",   # P-521: approved NIST SP 800-186, BSI TR-02102-2 §4.2
         "x448",
         "x25519",
     }
@@ -193,6 +197,7 @@ _classify_ec_curve_kex = _classify_ec_curve
 # INFO is treated as "unknown" and never overrides a real grade.
 _STATUS_RANK: dict[Status, int] = {
     Status.INFO: -1,
+    Status.OK: 0,        # OK (TLS 1.3) and GOOD share rank 0
     Status.GOOD: 0,
     Status.SUFFICIENT: 1,
     Status.PHASE_OUT: 2,
