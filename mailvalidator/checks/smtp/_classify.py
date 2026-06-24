@@ -122,8 +122,22 @@ def _tls_version_status(version: str) -> Status:
 
 
 # ---------------------------------------------------------------------------
-# EC curve classification  (NCSC-NL TLS v2.1, table 9)
+# EC curve / key-exchange group classification
+# (NCSC-NL TLS v2.1 table 9 for classical curves;
+#  NIST FIPS 203, CNSA 2.0, BSI TR-02102-2 §4 for PQC hybrid groups)
 # ---------------------------------------------------------------------------
+
+# PQC hybrid groups (X25519 or NIST P-curve + ML-KEM) — IANA-assigned
+# codepoints per draft-kwiatkowski-tls-ecdhe-mlkem.  These are the most
+# strongly recommended groups as of NIST FIPS 203 (2024) and BSI TR-02102-2.
+_GOOD_EC_GROUPS_PQC: frozenset[str] = frozenset(
+    {
+        "x25519mlkem768",         # 0x11ec — IANA final name (OpenSSL ≥ 3.4)
+        "secp256r1mlkem768",      # 0x11eb — IANA final name (OpenSSL ≥ 3.4)
+        "secp384r1mlkem1024",     # 0x11ed — IANA final name (OpenSSL ≥ 3.4)
+        "x25519kyber768draft00",  # 0xfe30 — draft name used by OpenSSL 3.2/3.3
+    }
+)
 
 _GOOD_EC_CURVES: frozenset[str] = frozenset(
     {
@@ -138,19 +152,26 @@ _PHASE_OUT_EC_CURVES: frozenset[str] = frozenset({"secp224r1"})
 
 
 def _classify_ec_curve(curve: str) -> Status:
-    """Classify a named EC curve used for key exchange.
+    """Classify a named EC curve or PQC hybrid group used for key exchange.
 
-    :param curve: Curve name as reported by OpenSSL (e.g. ``"x25519"``).
-        Case-insensitive.
+    PQC hybrid groups (X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024)
+    are rated GOOD — they are the preferred groups per NIST FIPS 203 (2024),
+    CNSA 2.0, and BSI TR-02102-2.  Classical ECDHE curves (x25519, secp256r1,
+    secp384r1, x448) are also GOOD per NCSC-NL TLS v2.1 table 9.
+
+    :param curve: Curve or group name as reported by OpenSSL (e.g.
+        ``"x25519"`` or ``"X25519MLKEM768"``).  Case-insensitive.
     :type curve: str
-    :returns: :attr:`~mailvalidator.models.Status.GOOD` for recommended curves,
-        :attr:`~mailvalidator.models.Status.PHASE_OUT` for deprecated ones,
-        :attr:`~mailvalidator.models.Status.INSUFFICIENT` for other named curves,
-        :attr:`~mailvalidator.models.Status.INFO` when the name is empty (not
-        exposed by this Python/OpenSSL build).
+    :returns: :attr:`~mailvalidator.models.Status.GOOD` for recommended curves
+        and PQC hybrid groups, :attr:`~mailvalidator.models.Status.PHASE_OUT`
+        for deprecated ones, :attr:`~mailvalidator.models.Status.INSUFFICIENT`
+        for other named curves, :attr:`~mailvalidator.models.Status.INFO` when
+        the name is empty (not exposed by this Python/OpenSSL build).
     :rtype: ~mailvalidator.models.Status
     """
     c = curve.lower()
+    if c in _GOOD_EC_GROUPS_PQC:
+        return Status.GOOD
     if c in _GOOD_EC_CURVES:
         return Status.GOOD
     if c in _PHASE_OUT_EC_CURVES:

@@ -346,9 +346,9 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
         if group:
             st = _classify_ec_curve(group)
             msg = (
-                [f"Curve {group} is deprecated; prefer x25519 or secp256r1."]
+                [f"Curve {group} is deprecated; prefer X25519MLKEM768, x25519, or secp256r1."]
                 if st == Status.PHASE_OUT
-                else [f"Curve {group} is not recommended for key exchange."]
+                else [f"Curve {group} is not recommended for key exchange; prefer X25519MLKEM768 or x25519."]
                 if st == Status.INSUFFICIENT
                 else []
             )

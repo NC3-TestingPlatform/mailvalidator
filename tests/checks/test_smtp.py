@@ -229,6 +229,17 @@ class TestKeyExchange:
         assert _classify_ec_curve("secp256r1") == Status.GOOD
         assert _classify_ec_curve("x25519") == Status.GOOD
 
+    def test_pqc_hybrid_groups_are_good(self):
+        # PQC hybrid groups (NIST FIPS 203, CNSA 2.0, BSI TR-02102-2)
+        assert _classify_ec_curve("X25519MLKEM768") == Status.GOOD
+        assert _classify_ec_curve("SecP256r1MLKEM768") == Status.GOOD
+        assert _classify_ec_curve("SecP384r1MLKEM1024") == Status.GOOD
+        # case-insensitive
+        assert _classify_ec_curve("x25519mlkem768") == Status.GOOD
+        assert _classify_ec_curve("secp384r1mlkem1024") == Status.GOOD
+        # draft name used by OpenSSL 3.2/3.3 before IANA-final assignment
+        assert _classify_ec_curve("X25519Kyber768Draft00") == Status.GOOD
+
     def test_phase_out_curve(self):
         assert _classify_ec_curve("secp224r1") == Status.PHASE_OUT
 

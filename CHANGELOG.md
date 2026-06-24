@@ -11,6 +11,22 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.4] — 2026-06-24
+
+### Fixed
+- `checks/smtp/_classify`: PQC hybrid key-exchange groups (`X25519MLKEM768`,
+  `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`) were incorrectly classified as
+  `INSUFFICIENT`.  They are now rated `GOOD` — the highest tier — per NIST
+  FIPS 203 (2024), CNSA 2.0, and BSI TR-02102-2.  The draft alias
+  `X25519Kyber768Draft00` (OpenSSL 3.2/3.3, codepoint `0xfe30`) is also
+  treated as `GOOD` to avoid false negatives on servers that have not yet
+  upgraded to OpenSSL ≥ 3.4.
+- `checks/smtp/_tls_checks`: PHASE_OUT and INSUFFICIENT key-exchange detail
+  messages now recommend `X25519MLKEM768` as the preferred group alongside
+  the classical `x25519`/`secp256r1` options.
+
+---
+
 ## [0.2.3] — 2026-06-19
 
 ### Fixed
@@ -265,7 +281,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ---
 
 [Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...HEAD
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.0...v0.2.1
