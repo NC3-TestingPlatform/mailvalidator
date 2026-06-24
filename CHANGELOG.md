@@ -11,6 +11,16 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.6] — 2026-06-24
+
+### Changed
+- `checks/smtp/_check`: removed the separate `SMTP Port Fallback` check row.
+  When port 25 is unreachable and a fallback port (587 or 465) succeeds, the
+  fallback detail (`Port 25 unreachable; fell back to port <N>.`) is appended
+  to the `SMTP Connect` check description instead of appearing as its own row.
+
+---
+
 ## [0.2.5] — 2026-06-24
 
 ### Fixed
@@ -298,7 +308,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...v0.2.3

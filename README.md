@@ -63,8 +63,8 @@ The SMTP check targets **external-facing MX servers** that accept inbound mail
 on **port 25** (RFC 5321 §2.1, §4.5.3.2).  If port 25 is refused or the
 connection times out, the tool automatically retries on port **587** (RFC 6409
 submission) then port **465** (RFC 8314 implicit-TLS) before reporting failure.
-When a fallback port is used an `INFO` check named **SMTP Port Fallback** is
-prepended to the results.
+When a fallback port is used its details are included in the **SMTP Connect**
+check description.
 
 Results are grouped into four colour-coded panels: **Protocol** (connection,
 banner, EHLO, extensions, STARTTLS, VRFY, open relay), **TLS** (version

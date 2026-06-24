@@ -183,17 +183,6 @@ successful connection is informational.
 reachable from the public internet, that the MTA process is running, and that
 the `220` greeting is RFC 5321-compliant.
 
-### SMTP Port Fallback
-
-**What it checks:** Records which port was actually used when port 25 was
-unavailable and a fallback port succeeded.
-
-**Severity:** `INFO` — no penalty points.
-
-**Note:** Port 25 being blocked does not affect deliverability if the server
-accepts connections on a fallback port, but it is non-standard for an MX server
-and may indicate a misconfigured firewall or hosting provider restriction.
-
 ---
 
 ## HIGH — 10 pts each

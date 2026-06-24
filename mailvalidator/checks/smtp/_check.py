@@ -124,26 +124,22 @@ def check_smtp(
 
     smtp = _smtp
 
-    if actual_port != port:
+    _fell_back = actual_port != port
+    if _fell_back:
         result.port = actual_port
         port = actual_port  # keep local var consistent for TLS/DANE calls below
-        result.checks.append(
-            CheckResult(
-                name="SMTP Port Fallback",
-                status=Status.INFO,
-                value=str(actual_port),
-                details=[f"Port 25 unreachable; fell back to port {actual_port}."],
-            )
-        )
 
     result.response_time_ms = round(connect_ms, 2)
     result.banner = banner
+    _connect_details = [f"Banner: {banner}"]
+    if _fell_back:
+        _connect_details.append(f"Port 25 unreachable; fell back to port {actual_port}.")
     result.checks.append(
         CheckResult(
             name="SMTP Connect",
             status=Status.OK,
             value=f"{connect_ms:.1f} ms",
-            details=[f"Banner: {banner}"],
+            details=_connect_details,
         )
     )
 
