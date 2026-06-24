@@ -55,11 +55,11 @@ class TestTLSVersion:
     def test_tls12_sufficient(self):
         assert _tls_version_status("TLSv1.2") == Status.SUFFICIENT
 
-    def test_tls11_phase_out(self):
-        assert _tls_version_status("TLSv1.1") == Status.PHASE_OUT
+    def test_tls11_insufficient(self):
+        assert _tls_version_status("TLSv1.1") == Status.INSUFFICIENT
 
-    def test_tls10_phase_out(self):
-        assert _tls_version_status("TLSv1") == Status.PHASE_OUT
+    def test_tls10_insufficient(self):
+        assert _tls_version_status("TLSv1") == Status.INSUFFICIENT
 
     def test_ssl3_insufficient(self):
         assert _tls_version_status("SSLv3") == Status.INSUFFICIENT
@@ -85,7 +85,7 @@ class TestTLSVersion:
         assert checks[0].status == Status.GOOD
 
     def test_check_phase_out_when_old_tls_accepted(self):
-        """Accepting TLS 1.1 (phase-out) should produce a PHASE_OUT verdict."""
+        """Accepting TLS 1.1 (insufficient) should produce an INSUFFICIENT verdict."""
         checks: list = []
 
         # tls_min is the 5th positional arg (index 4); accept only TLS 1.1
@@ -118,6 +118,9 @@ class TestCipherClassification:
 
     def test_good_tls13_cipher(self):
         assert _classify_cipher("TLS_AES_256_GCM_SHA384") == Status.GOOD
+
+    def test_tls_aes_128_ccm_sha256_good(self):
+        assert _classify_cipher("TLS_AES_128_CCM_SHA256") == Status.GOOD
 
     def test_sufficient_cipher(self):
         assert _classify_cipher("DHE-RSA-AES256-SHA256") == Status.SUFFICIENT
@@ -479,6 +482,9 @@ class TestDANE:
 class TestClassifyEcCurveExtra:
     def test_empty_string_returns_info(self):
         assert _classify_ec_curve("") == Status.INFO
+
+    def test_secp521r1_good(self):
+        assert _classify_ec_curve("secp521r1") == Status.GOOD
 
 
 # ── _cert_info ────────────────────────────────────────────────────────────────

@@ -11,6 +11,28 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.7] — 2026-06-24
+
+### Fixed
+- `checks/smtp/_classify`: `secp521r1` (P-521) was misclassified as `INSUFFICIENT`.
+  It is now rated `GOOD` — approved by NIST SP 800-186, RFC 8422, and BSI TR-02102-2 §4.2.
+- `checks/smtp/_classify`: TLS 1.0 and TLS 1.1 were rated `PHASE_OUT`. They are now
+  `INSUFFICIENT` to align with RFC 8996 ("MUST NOT negotiate") and BSI TR-02102-2
+  ("no longer permitted"). NCSC-NL TLS v2.1 calls these "Phase-out" but the stricter
+  RFC 8996 / BSI position is used here to avoid underselling the risk to operators.
+- `checks/smtp/_classify`: `TLS_AES_128_CCM_SHA256` (RFC 8446 §B.4, full 16-byte
+  authentication tag, BSI TR-02102-2 approved) was absent from all cipher sets and
+  fell to `INSUFFICIENT`. It is now rated `GOOD`.
+- `checks/smtp/_classify`: `_STATUS_RANK` was missing `Status.OK`, causing a silent
+  `.get()` fallback to rank 0 (GOOD). `Status.OK` is now explicitly mapped to rank 0
+  alongside `Status.GOOD`.
+- `checks/smtp/_tls_checks`: removed dead `phase_out_accepted` code paths in
+  `_check_tls_version` — unreachable since TLS 1.0/1.1 now classify as `INSUFFICIENT`.
+- `checks/smtp/_tls_probe`: added `TLS_AES_128_CCM_SHA256` to `_TLS13_CIPHERSUITES`
+  so the cipher is probed during live server enumeration.
+
+---
+
 ## [0.2.6] — 2026-06-24
 
 ### Changed
@@ -308,7 +330,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...v0.2.4

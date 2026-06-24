@@ -67,17 +67,12 @@ def _check_tls_version(
         else:
             rejected.append(label)
 
-    phase_out_accepted = [
-        v for v in accepted if _tls_version_status(v) == Status.PHASE_OUT
-    ]
     insufficient_accepted = [
         v for v in accepted if _tls_version_status(v) == Status.INSUFFICIENT
     ]
 
     if insufficient_accepted:
         overall = Status.INSUFFICIENT
-    elif phase_out_accepted:
-        overall = Status.PHASE_OUT
     elif any(_tls_version_status(v) == Status.OK for v in accepted):
         overall = Status.GOOD
     elif any(_tls_version_status(v) == Status.SUFFICIENT for v in accepted):
@@ -95,10 +90,6 @@ def _check_tls_version(
         f"  {_MARKER.get(_tls_version_status(v).value, '✔')}  {v} – accepted"
         for v in accepted
     ] + [f"  –  {v} – not accepted" for v in rejected]
-    if phase_out_accepted:
-        detail_lines.append(
-            f"Disable: {', '.join(phase_out_accepted)} – deprecated protocol(s) still accepted."
-        )
     if insufficient_accepted:
         detail_lines.append(
             f"CRITICAL – disable immediately: {', '.join(insufficient_accepted)} – insecure protocol(s) accepted."

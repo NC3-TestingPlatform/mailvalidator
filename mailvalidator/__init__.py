@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("mailvalidator")
 except PackageNotFoundError:  # pragma: no cover – only when package not installed
-    __version__ = "0.2.6"
+    __version__ = "0.2.7"
 
 # NullHandler so library users who have not configured logging
 # do not see "No handler found" warnings (PEP 3118 / logging HOWTO).
