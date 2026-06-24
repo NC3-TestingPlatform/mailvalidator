@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.2.9] — 2026-06-24
+
 ### Changed
 - Performance: the DNSBL blacklist check is now submitted as a background
   future immediately after the MX lookup, so its ~30 s network I/O overlaps
@@ -360,7 +364,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.5...v0.2.6
