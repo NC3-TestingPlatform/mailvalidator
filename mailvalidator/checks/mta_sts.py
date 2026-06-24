@@ -36,7 +36,7 @@ _MX_PATTERN_RE = re.compile(
 )
 
 
-def check_mta_sts(domain: str) -> MTASTSResult:
+def check_mta_sts(domain: str, *, timeout: float = 10.0) -> MTASTSResult:
     """Check the MTA-STS DNS record and policy file for *domain*.
 
     Performs two checks:
@@ -149,7 +149,7 @@ def check_mta_sts(domain: str) -> MTASTSResult:
 
     # --- fetch policy file ---
     policy_url = _POLICY_URL_TPL.format(domain=domain)
-    policy_text, content_type, fetch_error = _fetch_policy(policy_url)
+    policy_text, content_type, fetch_error = _fetch_policy(policy_url, timeout=timeout)
 
     if fetch_error:
         result.checks.append(
@@ -244,17 +244,19 @@ def _parse_policy_file(text: str) -> dict[str, str | list[str]]:
     return tags
 
 
-def _fetch_policy(url: str) -> tuple[str, str, str]:
+def _fetch_policy(url: str, timeout: float = 10.0) -> tuple[str, str, str]:
     """Fetch the MTA-STS policy file from *url* over HTTPS.
 
     :param url: Full HTTPS URL of the policy file.
     :type url: str
+    :param timeout: HTTP request timeout in seconds.  Defaults to ``10.0``.
+    :type timeout: float
     :returns: ``(policy_text, content_type, "")`` on success, or
         ``("", "", error_message)`` on any network or HTTP error.
     :rtype: tuple[str, str, str]
     """
     try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:  # noqa: S310
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
             content_type = resp.headers.get("Content-Type", "")
             return resp.read().decode(errors="replace"), content_type, ""
     except urllib.error.URLError as exc:

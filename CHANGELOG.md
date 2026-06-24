@@ -9,6 +9,26 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+- Performance: the DNSBL blacklist check is now submitted as a background
+  future immediately after the MX lookup, so its ~30 s network I/O overlaps
+  with DNS checks and SMTP probes rather than running last (`assessor.py`).
+- Performance: SPF, DMARC, DKIM, BIMI, TLSRPT, MTA-STS, and DNSSEC checks
+  now all run in a single parallel `ThreadPoolExecutor` in `assessor.py`.
+  `check_dnssec_domain` and `check_dnssec_mx` are submitted alongside the
+  other DNS tasks instead of running sequentially before them, eliminating
+  ~2–4 s of serial DNSSEC latency on typical networks.
+- Performance: up to three MX servers are probed concurrently instead of
+  sequentially, cutting SMTP probe time by ~50–66% when multiple MX records
+  are present (`assessor.py`).
+- The `timeout` parameter of `assess()` is now propagated through the call
+  stack: `check_mx()` passes it to `dns_utils.resolve()` as `resolver.lifetime`,
+  and `check_mta_sts()` passes it to `urllib.request.urlopen()`.
+- `dns_utils._make_resolver()` and `dns_utils.resolve()` accept a new
+  `timeout: float = 5.0` keyword argument that sets `resolver.lifetime`.
+- `checks/blacklist.py`: `DNSBL_ZONES` is deduplicated at module load time with
+  `list(dict.fromkeys(...))`, removing six duplicate zone entries.
+
 ---
 
 ## [0.2.8] — 2026-06-24

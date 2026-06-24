@@ -134,6 +134,7 @@ DNSBL_ZONES: list[str] = [
     "zen.spamhaus.org",
     "zen.spamhaus.org",
 ]
+DNSBL_ZONES = list(dict.fromkeys(DNSBL_ZONES))
 
 
 def _reverse_ip(ip: str) -> str:

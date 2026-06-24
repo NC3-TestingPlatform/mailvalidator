@@ -13,11 +13,13 @@ from mailvalidator.dns_utils import get_authoritative_ns, resolve, resolve_a
 from mailvalidator.models import CheckResult, MXRecord, MXResult, Status
 
 
-def check_mx(domain: str) -> MXResult:
+def check_mx(domain: str, *, timeout: float = 5.0) -> MXResult:
     """Look up MX records via the domain's authoritative name servers.
 
     :param domain: The domain whose MX records should be queried.
     :type domain: str
+    :param timeout: DNS resolver lifetime in seconds.  Defaults to ``5.0``.
+    :type timeout: float
     :returns: Result containing sorted MX records and diagnostic checks.
     :rtype: MXResult
     """
@@ -28,7 +30,7 @@ def check_mx(domain: str) -> MXResult:
     result.authoritative_ns = auth_ns
 
     # --- fetch MX records (prefer authoritative, fall back to recursive) ---
-    raw_mx = resolve(domain, "MX", nameservers=auth_ns if auth_ns else None)
+    raw_mx = resolve(domain, "MX", nameservers=auth_ns if auth_ns else None, timeout=timeout)
 
     if not raw_mx:
         result.checks.append(

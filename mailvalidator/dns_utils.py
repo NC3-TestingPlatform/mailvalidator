@@ -24,7 +24,10 @@ import dns.reversename
 _FALLBACK_NS = ["8.8.8.8", "1.1.1.1"]
 
 
-def _make_resolver(nameservers: list[str] | None = None) -> dns.resolver.Resolver:
+def _make_resolver(
+    nameservers: list[str] | None = None,
+    timeout: float = 5.0,
+) -> dns.resolver.Resolver:
     """Return a configured :class:`dns.resolver.Resolver`.
 
     If *nameservers* is provided those addresses are used directly.  Otherwise
@@ -32,6 +35,7 @@ def _make_resolver(nameservers: list[str] | None = None) -> dns.resolver.Resolve
     public fallbacks (8.8.8.8 / 1.1.1.1) are used instead.
 
     :param nameservers: Optional list of resolver IP addresses to use.
+    :param timeout: Total resolver lifetime in seconds.  Defaults to ``5.0``.
     :returns: A ready-to-use :class:`dns.resolver.Resolver` instance.
     """
     try:
@@ -45,6 +49,7 @@ def _make_resolver(nameservers: list[str] | None = None) -> dns.resolver.Resolve
     elif not getattr(resolver, "nameservers", None):
         resolver.nameservers = list(_FALLBACK_NS)  # pragma: no cover
 
+    resolver.lifetime = timeout
     return resolver
 
 
@@ -54,6 +59,7 @@ def resolve(
     nameservers: list[str] | None = None,
     *,
     raise_nxdomain: bool = False,
+    timeout: float = 5.0,
 ) -> list[str] | None:
     """Resolve *name* for *rdtype* and return rdata values as strings.
 
@@ -71,7 +77,7 @@ def resolve(
         queried name does not exist.
     :rtype: list[str] | None
     """
-    resolver = _make_resolver(nameservers)
+    resolver = _make_resolver(nameservers, timeout=timeout)
     try:
         answer = resolver.resolve(name, rdtype, raise_on_no_answer=False)
         if answer.rrset is None:

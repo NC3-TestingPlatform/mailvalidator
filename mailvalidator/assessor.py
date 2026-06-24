@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import socket
-from typing import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable
 
 from mailvalidator.checks.bimi import check_bimi
 from mailvalidator.checks.blacklist import check_blacklist
@@ -23,7 +24,7 @@ from mailvalidator.checks.mx import check_mx
 from mailvalidator.checks.smtp import check_smtp
 from mailvalidator.checks.spf import check_spf
 from mailvalidator.checks.tlsrpt import check_tlsrpt
-from mailvalidator.models import MailReport, MXRecord, SMTPDiagResult
+from mailvalidator.models import MailReport, MXRecord
 
 logger = logging.getLogger("mailvalidator")
 
@@ -80,55 +81,57 @@ def assess(
     report = MailReport(domain=domain)
 
     _cb("Checking MX records…")
-    report.mx = check_mx(domain)
+    report.mx = check_mx(domain, timeout=timeout)
 
+    # Submit blacklist immediately — it takes ~30 s and only needs the first
+    # MX IP, available now.  Runs concurrently with all remaining checks.
+    _bl_pool = None
+    _bl_future = None
+    if run_blacklist:
+        _bl_mx_ips = _resolve_mx_ips(report.mx.records) if report.mx else []
+        if _bl_mx_ips:
+            _bl_target: str | None = _bl_mx_ips[0]
+        else:
+            try:
+                _bl_target = socket.gethostbyname(domain)
+            except socket.gaierror:
+                _bl_target = None
+        if _bl_target:
+            _cb(f"Blacklist check on {_bl_target} (running in background…)")
+            _bl_pool = ThreadPoolExecutor(max_workers=1)
+            _bl_future = _bl_pool.submit(check_blacklist, _bl_target)
+
+    _cb("Checking DNS records (SPF, DMARC, DKIM, BIMI, TLSRPT, MTA-STS, DNSSEC) in parallel…")
+    _dns_tasks: dict[str, Any] = {
+        "spf":     lambda: check_spf(domain),
+        "dmarc":   lambda: check_dmarc(domain),
+        "dkim":    lambda: check_dkim(domain),
+        "bimi":    lambda: check_bimi(domain),
+        "tlsrpt":  lambda: check_tlsrpt(domain),
+        "mta_sts": lambda: check_mta_sts(domain, timeout=timeout),
+    }
     if run_dnssec:
-        _cb("Checking DNSSEC for email domain…")
-        report.dnssec_domain = check_dnssec_domain(domain)
-
+        _dns_tasks["dnssec_domain"] = lambda: check_dnssec_domain(domain, timeout=timeout)
         if report.mx and report.mx.records:
-            mx_domains = [r.exchange for r in report.mx.records]
-            _cb("Checking DNSSEC for MX server domain(s)…")
-            report.dnssec_mx = check_dnssec_mx(mx_domains, email_domain=domain)
-
-    _cb("Checking SPF record…")
-    report.spf = check_spf(domain)
-
-    _cb("Checking DMARC record…")
-    report.dmarc = check_dmarc(domain)
-
-    _cb("Checking DKIM base node…")
-    report.dkim = check_dkim(domain)
-
-    _cb("Checking BIMI record…")
-    report.bimi = check_bimi(domain)
-
-    _cb("Checking TLSRPT record…")
-    report.tlsrpt = check_tlsrpt(domain)
-
-    _cb("Checking MTA-STS…")
-    report.mta_sts = check_mta_sts(domain)
+            _dnssec_mx_domains = [r.exchange for r in report.mx.records]
+            _dns_tasks["dnssec_mx"] = lambda: check_dnssec_mx(_dnssec_mx_domains, email_domain=domain, timeout=timeout)
+    with ThreadPoolExecutor(max_workers=len(_dns_tasks)) as _pool:
+        _futures: dict[Any, str] = {_pool.submit(fn): attr for attr, fn in _dns_tasks.items()}
+        for _fut in as_completed(_futures):
+            setattr(report, _futures[_fut], _fut.result())
 
     if run_smtp and report.mx and report.mx.records:
-        smtp_results: list[SMTPDiagResult] = []
-        for mx_rec in report.mx.records[:3]:  # probe at most the first 3 MX servers
-            _cb(f"SMTP diagnostics on {mx_rec.exchange}:{smtp_port}…")
-            smtp_results.append(check_smtp(mx_rec.exchange, port=smtp_port))
-        report.smtp = smtp_results
+        _mx_to_probe = report.mx.records[:3]
+        with ThreadPoolExecutor(max_workers=len(_mx_to_probe)) as _smtp_pool:
+            _smtp_futures = [
+                _smtp_pool.submit(check_smtp, rec.exchange, smtp_port)
+                for rec in _mx_to_probe
+            ]
+            report.smtp = [f.result() for f in _smtp_futures]
 
-    if run_blacklist:
-        mx_ips = _resolve_mx_ips(report.mx.records) if report.mx else []
-        if mx_ips:
-            target_ip = mx_ips[0]
-            _cb(f"Blacklist check on {target_ip} (may take ~30 s)…")
-            report.blacklist = check_blacklist(target_ip)
-        else:
-            # Fall back to the domain's A record when no MX IPs are available.
-            try:
-                ip = socket.gethostbyname(domain)
-                _cb(f"Blacklist check on {ip}…")
-                report.blacklist = check_blacklist(ip)
-            except socket.gaierror:
-                pass
+    # Collect blacklist result (started right after MX; likely already done).
+    if _bl_future is not None and _bl_pool is not None:
+        report.blacklist = _bl_future.result()
+        _bl_pool.shutdown(wait=False)
 
     return report
