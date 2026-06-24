@@ -60,7 +60,7 @@ dependencies = [
     "typer>=0.12",
     "aiohttp>=3.9",
     "cryptography>=42",
-    "pyopenssl>=24.3",
+    "pyopenssl>=26.3.0",
     "chainvalidator @ file:./vendor/chainvalidator",
     "quantumvalidator @ file:./vendor/quantumvalidator",
 ]
