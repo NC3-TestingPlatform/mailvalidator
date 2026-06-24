@@ -8,6 +8,7 @@ from mailvalidator.models import CheckResult, Status, TLSDetails
 
 from ._classify import (
     _CIPHER_ICON,
+    _GOOD_EC_GROUPS_PQC,
     _SHA_GOOD,
     _SHA_PHASE_OUT,
     _STATUS_RANK,
@@ -340,34 +341,47 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
     tls_ver = details.tls_version
     cipher = details.cipher_name
 
-    # TLS 1.3 – always ephemeral ECDHE per RFC 8446
+    # TLS 1.3 – always ephemeral key exchange per RFC 8446 §4.2.7;
+    # may be classical ECDHE (EC curve) or a PQC hybrid KEM group.
     if tls_ver == "TLSv1.3" and cipher.startswith("TLS_"):
         group = details.dh_group or ""
         if group:
             st = _classify_ec_curve(group)
-            msg = (
-                [f"Curve {group} is deprecated; prefer X25519MLKEM768, x25519, or secp256r1."]
-                if st == Status.PHASE_OUT
-                else [f"Curve {group} is not recommended for key exchange; prefer X25519MLKEM768 or x25519."]
-                if st == Status.INSUFFICIENT
-                else []
-            )
-            checks.append(
-                CheckResult(
-                    name="Key Exchange – EC Curve",
-                    status=st,
-                    value=f"ECDHE ({group})",
-                    details=msg,
+            if group.lower() in _GOOD_EC_GROUPS_PQC:
+                # PQC hybrid group: X25519 or NIST P-curve + ML-KEM.
+                # Not ECDHE — label as Hybrid KEM so the report is accurate.
+                checks.append(
+                    CheckResult(
+                        name="Key Exchange",
+                        status=st,
+                        value=f"Hybrid KEM ({group})",
+                        details=[],
+                    )
                 )
-            )
+            else:
+                msg = (
+                    [f"Curve {group} is deprecated; prefer X25519MLKEM768, x25519, or secp256r1."]
+                    if st == Status.PHASE_OUT
+                    else [f"Curve {group} is not recommended for key exchange; prefer X25519MLKEM768 or x25519."]
+                    if st == Status.INSUFFICIENT
+                    else []
+                )
+                checks.append(
+                    CheckResult(
+                        name="Key Exchange",
+                        status=st,
+                        value=f"ECDHE ({group})",
+                        details=msg,
+                    )
+                )
         else:
             checks.append(
                 CheckResult(
-                    name="Key Exchange – EC Curve",
+                    name="Key Exchange",
                     status=Status.GOOD,
                     value="ECDHE (TLS 1.3 – group not exposed by this Python/OpenSSL build)",
                     details=[
-                        "TLS 1.3 mandates ephemeral ECDHE (RFC 8446 §4.2.7). "
+                        "TLS 1.3 mandates ephemeral key exchange (RFC 8446 §4.2.7). "
                         "Use testssl.sh to confirm the exact group."
                     ],
                 )
@@ -391,7 +405,7 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
         )
         checks.append(
             CheckResult(
-                name="Key Exchange – EC Curve",
+                name="Key Exchange",
                 status=st,
                 value=f"ECDHE ({curve})" if curve else "ECDHE (curve unknown)",
                 details=msg,
@@ -416,7 +430,7 @@ def _check_key_exchange(details: TLSDetails, checks: list[CheckResult]) -> None:
             )
         checks.append(
             CheckResult(
-                name="Key Exchange – DH Group",
+                name="Key Exchange",
                 status=st2,
                 value=f"{bits} bit" if bits else "unknown",
                 details=[note] if note else [],

@@ -852,6 +852,20 @@ class TestCheckKeyExchangeExtra:
         assert checks[0].status == Status.GOOD
         assert "x25519" in checks[0].value
 
+    def test_tls13_with_pqc_hybrid_group(self):
+        """TLS 1.3 with a PQC hybrid group → GOOD, name='Key Exchange – Group', value contains 'Hybrid KEM'."""
+        checks: list = []
+        tls = make_tls(
+            tls_version="TLSv1.3",
+            cipher_name="TLS_AES_256_GCM_SHA384",
+            dh_group="X25519MLKEM768",
+        )
+        _check_key_exchange(tls, checks)
+        assert checks[0].status == Status.GOOD
+        assert checks[0].name == "Key Exchange"
+        assert "Hybrid KEM" in checks[0].value
+        assert "X25519MLKEM768" in checks[0].value
+
     def test_tls13_with_phase_out_group(self):
         """TLS 1.3 with a deprecated curve → PHASE_OUT."""
         checks: list = []

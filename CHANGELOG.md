@@ -11,6 +11,24 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.5] — 2026-06-24
+
+### Fixed
+- `checks/smtp/_tls_checks`: all key-exchange check results now use the
+  single consistent name `Key Exchange` (previously four variants existed:
+  `Key Exchange – EC Curve`, `Key Exchange – Group`, `Key Exchange – DH Group`,
+  and `Key Exchange`).  The mechanism (`ECDHE (x25519)`,
+  `Hybrid KEM (X25519MLKEM768)`, `DHE – 3072 bit`, `RSA (…)`) is shown in the
+  `value` field.
+- `checks/smtp/_tls_checks`: when TLS 1.3 negotiates a PQC hybrid key-exchange
+  group (e.g. `X25519MLKEM768`), the value is now `Hybrid KEM (X25519MLKEM768)`
+  instead of the misleading `ECDHE (X25519MLKEM768)`.  PQC hybrid groups are
+  KEMs (X25519 + ML-KEM-768), not EC curves, and the key exchange is not ECDHE.
+- `CHANGELOG.md`: removed duplicate `[Unreleased]` comparison link introduced
+  in v0.2.3.
+
+---
+
 ## [0.2.4] — 2026-06-24
 
 ### Fixed
@@ -280,8 +298,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...HEAD
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.1...v0.2.2
