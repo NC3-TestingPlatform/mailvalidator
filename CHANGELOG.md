@@ -9,6 +9,14 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+- `cli.py`: the `check` command's progress spinner now renders to a
+  dedicated, non-recording `Console` instead of Rich's implicit default
+  console, matching the pattern used by `chainvalidator` and
+  `quantumvalidator`. No behaviour change (the implicit console was never
+  the recording one used by `save_report()`), but the code path is now
+  explicit and consistent across modules.
+
 ---
 
 ## [0.2.9] — 2026-06-24
