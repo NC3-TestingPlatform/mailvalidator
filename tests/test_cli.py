@@ -215,6 +215,25 @@ class TestCliCommands:
             result = _runner.invoke(app, ["check", "example.com"])
         assert result.exit_code == 1
 
+    def test_cmd_check_df_grade_still_saves_output(self, tmp_path):
+        """--output must be honoured even when the D/F grade exits non-zero."""
+        report = MailReport(domain="example.com")
+        spf = SPFResult(domain="example.com")
+        spf.checks = [CheckResult(name="SPF Record", status=Status.NOT_FOUND)]
+        report.spf = spf
+        dkim = DKIMResult(domain="example.com")
+        dkim.checks = [CheckResult(name="DKIM Base Node", status=Status.ERROR)]
+        report.dkim = dkim
+        dest = str(tmp_path / "out.svg")
+        with (
+            patch("mailvalidator.cli.assess", return_value=report),
+            patch("mailvalidator.cli.print_full_report"),
+            patch("mailvalidator.cli.save_report") as mock_save,
+        ):
+            result = _runner.invoke(app, ["check", "example.com", "--output", dest])
+        assert result.exit_code == 1
+        mock_save.assert_called_once_with(dest)
+
     def test_cmd_check_no_smtp_flag(self):
         with (
             patch(

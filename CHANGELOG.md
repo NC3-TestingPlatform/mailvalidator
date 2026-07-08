@@ -9,6 +9,13 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Fixed
+- `cli.py`: `--output` is now honoured even when the report grades D or F.
+  The `check` command exited with code 1 for D/F-grade reports *before*
+  reaching the `if output:` block, so `--output` silently never wrote a
+  file for any domain with CRITICAL/HIGH findings — exactly the domains a
+  security assessment tool is most likely to be run against.
+
 ---
 
 ## [0.2.10] — 2026-07-08
