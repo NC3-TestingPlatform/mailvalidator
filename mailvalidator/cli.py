@@ -258,11 +258,6 @@ def cmd_check(
 
     print_full_report(report)
 
-    actions = extract_verdict_actions(report)
-    grade = calculate_grade(actions)
-    if grade.letter in ("D", "F"):
-        raise typer.Exit(code=1)
-
     if output:
         try:
             save_report(output)
@@ -270,6 +265,11 @@ def cmd_check(
         except (ValueError, OSError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(code=1)
+
+    actions = extract_verdict_actions(report)
+    grade = calculate_grade(actions)
+    if grade.letter in ("D", "F"):
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
