@@ -29,6 +29,7 @@ import re
 from typing import Annotated, Optional
 
 import typer
+from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from mailvalidator import __version__
@@ -69,6 +70,11 @@ app = typer.Typer(
     help="Assess mail server configuration: MX, SPF, DKIM, DMARC, BIMI, TLSRPT, MTA-STS, blacklists and more.",
     add_completion=False,
 )
+
+# Non-recording console for the transient progress spinner. Using the
+# recording console from reporter.py here would bake every spinner
+# frame into the record buffer that save_report() exports from.
+_progress_console = Console(highlight=False)
 
 # ---------------------------------------------------------------------------
 # Input validators
@@ -229,6 +235,7 @@ def cmd_check(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         transient=True,
+        console=_progress_console,
     ) as progress:
         task = progress.add_task("Starting…", total=None)
 

@@ -11,6 +11,18 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.2.10] — 2026-07-08
+
+### Changed
+- `cli.py`: the `check` command's progress spinner now renders to a
+  dedicated, non-recording `Console` instead of Rich's implicit default
+  console, matching the pattern used by `chainvalidator` and
+  `quantumvalidator`. No behaviour change (the implicit console was never
+  the recording one used by `save_report()`), but the code path is now
+  explicit and consistent across modules.
+
+---
+
 ## [0.2.9] — 2026-06-24
 
 ### Changed
@@ -364,7 +376,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.6...v0.2.7
