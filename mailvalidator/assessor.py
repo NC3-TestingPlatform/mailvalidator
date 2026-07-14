@@ -169,6 +169,7 @@ def assess(
     _bl_futures: list[Any] = []
     if run_blacklist:
         _bl_targets: list[str] = []
+        _bl_fallback_note: str | None = None
         if report.mx and report.mx.records:
             for _rec in _select_probe_records(report.mx.records):
                 _ip = _primary_ip(_rec)
@@ -176,11 +177,27 @@ def assess(
                     _bl_targets.append(_ip)
         if not _bl_targets:
             # No MX records, or none of the MX targets resolve (dangling MX)
-            # — fall back to the domain's own address record.
+            # — fall back to the domain's own address record.  The note makes
+            # the report self-explanatory about whose IP is being checked.
             try:
-                _bl_targets = [socket.gethostbyname(domain)]
+                _fallback_ip = socket.gethostbyname(domain)
             except socket.gaierror:
-                _bl_targets = []
+                _fallback_ip = None
+            if _fallback_ip:
+                _bl_targets = [_fallback_ip]
+                if report.mx and report.mx.records:
+                    _bl_fallback_note = (
+                        f"{_fallback_ip} is the domain's own A record, checked "
+                        "as a fallback because no MX target resolves. RFC 5321 "
+                        "implicit-MX does not apply when an MX record exists, "
+                        "so this IP is not in the actual mail path."
+                    )
+                else:
+                    _bl_fallback_note = (
+                        f"{_fallback_ip} is the domain's own A record — the "
+                        "implicit MX destination (RFC 5321 §5.1) since the "
+                        "domain publishes no MX records."
+                    )
         if not _bl_targets:
             # Never skip silently: record why no DNSBL lookup ran.
             _skipped = BlacklistResult(ip=domain, total_checked=0)
@@ -242,13 +259,18 @@ def assess(
     if _bl_futures and _bl_pool is not None:
         for _target, _fut in _bl_futures:
             try:
-                report.blacklist.append(_fut.result())
+                _bl_result = _fut.result()
             except Exception:
                 logger.warning(
                     "Blacklist check failed for %s; skipping this target",
                     _target,
                     exc_info=True,
                 )
+                continue
+            if _bl_fallback_note:
+                for _chk in _bl_result.checks:
+                    _chk.details.append(_bl_fallback_note)
+            report.blacklist.append(_bl_result)
         _bl_pool.shutdown(wait=False)
 
     return report
