@@ -96,6 +96,27 @@ correctly configured mail servers.
 
 ---
 
+### MX Target Resolution
+
+**What it checks:** Whether each MX exchange hostname resolves to at least one
+A/AAAA address.
+
+**Why CRITICAL (when no target resolves):**  
+An MX record pointing at a hostname with no address records is a *dangling
+MX*: all inbound mail is undeliverable even though the MX lookup itself
+succeeds.  This is common when a hosted-mail subscription lapses (e.g. a
+`<domain>.mail.protection.outlook.com` host disappears once the domain is no
+longer active in a Microsoft 365 tenant).  Provider-hosted dangling names can
+also be a domain-takeover risk if another customer can claim them.  When only
+*some* targets are unresolvable the finding is HIGH instead — senders fall
+through to the remaining MX hosts, but the stale entries add latency and
+should be removed.
+
+**Remediation:** Re-activate the hosting subscription or remove/re-point the
+stale MX record; verify every exchange hostname resolves.
+
+---
+
 ### Open Relay
 
 **What it checks:** The SMTP server accepts relay attempts for unrelated
@@ -703,6 +724,11 @@ Two runtime escalation rules override the static severity table:
 2. **TLS Versions INSUFFICIENT → CRITICAL**  
    If the server accepts a TLS version rated INSUFFICIENT (SSLv3), the TLS
    Versions finding is escalated from HIGH to CRITICAL (POODLE, CVE-2014-3566).
+
+3. **MX Target Resolution ERROR → CRITICAL**  
+   If *no* MX exchange hostname resolves to an address (dangling MX), the
+   finding is escalated from HIGH to CRITICAL — mail to the domain is
+   undeliverable.  Partial resolution (some targets dangling) stays HIGH.
 
 ---
 

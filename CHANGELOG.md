@@ -11,6 +11,26 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.3.1] — 2026-07-14
+
+### Added
+- `checks/mx.py`: new **MX Target Resolution** check — verifies every MX
+  exchange hostname resolves to at least one A/AAAA address. No resolvable
+  target at all (dangling MX, mail undeliverable — e.g. a stale
+  `*.mail.protection.outlook.com` host after an M365 subscription lapses) is
+  ERROR and escalates to a CRITICAL verdict action; partial resolution is
+  WARNING (HIGH). Documented in `docs/SECURITY_VERDICT.md` (escalation rule 3).
+
+### Fixed
+- `assessor.py`: regression introduced in 0.3.0 — when MX records exist but
+  none of their targets resolve, the DNSBL blacklist check was silently
+  skipped. The check now falls back to the domain's own A record (restoring
+  0.2.x behaviour), and when no target can be determined at all a visible
+  "Blacklist Status: skipped" N/A row is emitted instead of omitting the
+  section.
+
+---
+
 ## [0.3.0] — 2026-07-14
 
 ### Fixed
@@ -433,7 +453,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.9...v0.2.10

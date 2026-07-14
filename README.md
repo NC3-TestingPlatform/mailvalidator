@@ -14,7 +14,7 @@ $ mailvalidator check example.com
 ```
 
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-![Tests](https://img.shields.io/badge/tests-766%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-772%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![License](https://img.shields.io/badge/license-GPLv3-lightgrey)
 
@@ -42,7 +42,7 @@ Part of the [NC3-TestingPlatform](https://github.com/NC3-TestingPlatform).
 
 | Check                | Command                   | What is verified                                                                                                                                                                                                                                                                                                                            |
 | -------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection                                                                                                                                                                                                                                                                              |
+| **MX Records**       | `mailvalidator mx`        | Authoritative NS query, priority ordering, duplicate detection, dangling-MX target resolution (A/AAAA per exchange)                                                                                                                                                                                                                         |
 | **DNSSEC**           | `mailvalidator dnssec`    | Chain-of-trust validation (Trust Anchor → `.` → TLD → domain) for the email address domain and each MX host domain; CNAME chain following; DANE prerequisite annotation (RFC 7671)                                                                                                                                                          |
 | **SMTP Diagnostics** | `mailvalidator smtp`      | See [SMTP check details](#smtp-check-rfc-5321) below                                                                                                                                                                                                                                                                                        |
 | **TLS Inspection**   | _(part of smtp)_          | TLS 1.0–1.3 version probing, 34 cipher suites graded per NCSC-NL, cipher order enforcement, key exchange (ECDHE/DHE/RSA), CRIME compression, RFC 5746 renegotiation, certificate trust chain/domain match/expiry; **PQC readiness** (ML-KEM hybrid group detection, CNSA 2.0 / BSI TR-02102-2)                                            |
@@ -403,7 +403,7 @@ pytest tests/checks/test_smtp.py -v
 pytest tests/checks/test_spf.py::TestSPFCoverage -v
 ```
 
-The test suite has **766 tests** and achieves **100% coverage** (2 156
+The test suite has **772 tests** and achieves **100% coverage** (2 171
 statements) across all modules. Coverage reporting is pre-configured in
 `pyproject.toml` — no extra flags needed.
 
