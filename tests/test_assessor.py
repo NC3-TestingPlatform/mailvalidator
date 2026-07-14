@@ -34,6 +34,17 @@ class TestProviderZone:
     def test_single_label(self):
         assert _provider_zone("localhost") == "localhost"
 
+    def test_multi_label_public_suffix(self):
+        assert _provider_zone("mx1.acme.co.uk") == "acme.co.uk"
+
+    def test_distinct_providers_under_same_public_suffix(self):
+        assert _provider_zone("mx1.acme.co.uk") != _provider_zone(
+            "mx1.othercorp.co.uk"
+        )
+
+    def test_bare_public_suffix(self):
+        assert _provider_zone("co.uk") == "co.uk"
+
 
 class TestSelectProbeRecords:
     @staticmethod
@@ -81,6 +92,18 @@ class TestSelectProbeRecords:
     def test_custom_limit(self):
         records = [self._rec(i, f"mx{i}.example.com") for i in range(1, 5)]
         assert len(_select_probe_records(records, limit=2)) == 2
+
+    def test_cctld_providers_treated_as_distinct(self):
+        records = [
+            self._rec(10, "mx1.acme.co.uk"),
+            self._rec(20, "mx2.acme.co.uk"),
+            self._rec(30, "mx1.othercorp.co.uk"),
+        ]
+        selected = _select_probe_records(records, limit=2)
+        assert [r.exchange for r in selected] == [
+            "mx1.acme.co.uk",
+            "mx1.othercorp.co.uk",
+        ]
 
 
 class TestPrimaryIp:
@@ -207,7 +230,7 @@ class TestAssess:
                 "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
             ):
                 assess("example.com")
-        mock_bl.assert_called_once_with("9.9.9.9")
+        mock_bl.assert_called_once_with("9.9.9.9", max_workers=50)
 
     def test_blacklist_checks_one_ip_per_provider(self):
         records = [
@@ -234,6 +257,10 @@ class TestAssess:
         checked = {call.args[0] for call in mock_bl.call_args_list}
         assert checked == {"1.1.1.1", "2.2.2.2", "3.3.3.3"}
         assert len(report.blacklist) == 3
+        # The DNSBL thread budget is split across the three targets.
+        assert all(
+            call.kwargs["max_workers"] == 16 for call in mock_bl.call_args_list
+        )
 
     def test_blacklist_deduplicates_shared_ips(self):
         records = [
@@ -248,7 +275,28 @@ class TestAssess:
                 "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
             ):
                 assess("example.com")
-        mock_bl.assert_called_once_with("9.9.9.9")
+        mock_bl.assert_called_once_with("9.9.9.9", max_workers=50)
+
+    def test_one_failing_blacklist_target_does_not_discard_report(self):
+        records = [
+            MXRecord(
+                priority=1, exchange="aspmx.l.google.com", ip_addresses=["1.1.1.1"]
+            ),
+            MXRecord(
+                priority=50, exchange="mx2.mail.ovh.net", ip_addresses=["3.3.3.3"]
+            ),
+        ]
+        ok_result = MagicMock()
+        mock_bl = MagicMock(side_effect=[ok_result, RuntimeError("resolver down")])
+        with self._ctx(
+            {"check_smtp": MagicMock(return_value=MagicMock()), "check_blacklist": mock_bl}
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                report = assess("example.com")
+        assert report.blacklist == [ok_result]
+        assert isinstance(report, MailReport)
 
     def test_smtp_receives_resolved_mx_ip(self):
         records = [
@@ -281,7 +329,7 @@ class TestAssess:
                 "mailvalidator.assessor.socket.gethostbyname", return_value="3.3.3.3"
             ):
                 assess("example.com")
-        mock_bl.assert_called_once_with("3.3.3.3")
+        mock_bl.assert_called_once_with("3.3.3.3", max_workers=50)
 
     def test_blacklist_skipped_when_gethostbyname_fails(self):
         mock_bl = MagicMock()

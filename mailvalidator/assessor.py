@@ -29,13 +29,35 @@ from mailvalidator.models import MailReport, MXRecord
 logger = logging.getLogger("mailvalidator")
 
 
+# Common multi-label public suffixes under which the registrable domain is
+# three labels long (e.g. "acme.co.uk").  Not a full Public Suffix List —
+# a pragmatic subset covering the ccTLDs most often seen in MX hostnames.
+_MULTI_LABEL_SUFFIXES: frozenset[str] = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "net.uk", "me.uk", "ltd.uk", "plc.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.br", "net.br", "org.br", "gov.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "com.mx", "com.ar", "com.tr", "com.sg", "com.hk", "com.tw", "com.my",
+    "co.za", "co.in", "co.kr", "co.id", "co.th",
+    "com.pl", "com.ua", "in.ua",
+})
+
+# Total concurrent DNSBL query threads across all blacklist targets.
+_BLACKLIST_TOTAL_WORKERS = 50
+
+
 def _provider_zone(exchange: str) -> str:
     """Return a coarse provider-zone key for an MX exchange hostname.
 
-    Uses the last two DNS labels (e.g. ``"aspmx.l.google.com"`` →
-    ``"google.com"``) as a heuristic for the operating mail provider so probe
-    selection can cover distinct providers rather than several hosts of the
-    same one.
+    Uses the registrable domain as a heuristic for the operating mail
+    provider so probe selection can cover distinct providers rather than
+    several hosts of the same one: the last two DNS labels
+    (``"aspmx.l.google.com"`` → ``"google.com"``), or the last three when
+    the two-label tail is a known multi-label public suffix
+    (``"mx1.acme.co.uk"`` → ``"acme.co.uk"``).  :data:`_MULTI_LABEL_SUFFIXES`
+    is a pragmatic subset of the Public Suffix List, not a replacement.
 
     :param exchange: MX exchange hostname.
     :type exchange: str
@@ -43,6 +65,8 @@ def _provider_zone(exchange: str) -> str:
     :rtype: str
     """
     labels = exchange.rstrip(".").lower().split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES:
+        return ".".join(labels[-3:])
     return ".".join(labels[-2:]) if len(labels) >= 2 else exchange.lower()
 
 
@@ -61,20 +85,20 @@ def _select_probe_records(records: list[MXRecord], limit: int = 3) -> list[MXRec
     :returns: Selected records in priority order.
     :rtype: list[~mailvalidator.models.MXRecord]
     """
-    selected_ids: set[int] = set()
+    selected: set[int] = set()
     seen_zones: set[str] = set()
-    for rec in records:  # one host per provider zone first
-        if len(selected_ids) >= limit:
+    for idx, rec in enumerate(records):  # one host per provider zone first
+        if len(selected) >= limit:
             break
         zone = _provider_zone(rec.exchange)
         if zone not in seen_zones:
             seen_zones.add(zone)
-            selected_ids.add(id(rec))
-    for rec in records:  # fill remaining slots by priority
-        if len(selected_ids) >= limit:
+            selected.add(idx)
+    for idx in range(len(records)):  # fill remaining slots by priority
+        if len(selected) >= limit:
             break
-        selected_ids.add(id(rec))
-    return [r for r in records if id(r) in selected_ids]
+        selected.add(idx)
+    return [records[i] for i in sorted(selected)]
 
 
 def _primary_ip(rec: MXRecord) -> str | None:
@@ -151,8 +175,14 @@ def assess(
                 _bl_targets = []
         if _bl_targets:
             _cb(f"Blacklist check on {', '.join(_bl_targets)} (running in background…)")
+            # Split the global DNSBL thread budget across targets so fanning
+            # out to several IPs does not multiply the total thread count.
+            _bl_workers = max(1, _BLACKLIST_TOTAL_WORKERS // len(_bl_targets))
             _bl_pool = ThreadPoolExecutor(max_workers=len(_bl_targets))
-            _bl_futures = [_bl_pool.submit(check_blacklist, t) for t in _bl_targets]
+            _bl_futures = [
+                (t, _bl_pool.submit(check_blacklist, t, max_workers=_bl_workers))
+                for t in _bl_targets
+            ]
 
     _cb("Checking DNS records (SPF, DMARC, DKIM, BIMI, TLSRPT, MTA-STS, DNSSEC) in parallel…")
     _dns_tasks: dict[str, Any] = {
@@ -185,8 +215,17 @@ def assess(
             report.smtp = [f.result() for f in _smtp_futures]
 
     # Collect blacklist results (started right after MX; likely already done).
+    # One failing target must not discard the rest of the report.
     if _bl_futures and _bl_pool is not None:
-        report.blacklist = [f.result() for f in _bl_futures]
+        for _target, _fut in _bl_futures:
+            try:
+                report.blacklist.append(_fut.result())
+            except Exception:
+                logger.warning(
+                    "Blacklist check failed for %s; skipping this target",
+                    _target,
+                    exc_info=True,
+                )
         _bl_pool.shutdown(wait=False)
 
     return report

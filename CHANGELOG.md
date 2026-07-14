@@ -43,6 +43,17 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - `checks/mx.py` / `verdict.py`: **Duplicate Priorities** downgraded from
   WARNING (MEDIUM verdict action) to INFO — equal-preference MX records are
   valid RFC 5321 §5.1 load distribution and commonly intentional.
+- `assessor.py`: blacklist results are collected with per-target error
+  isolation — one failing DNSBL target is logged and skipped instead of
+  discarding the whole report (review finding, PR #19).
+- `assessor.py`: the 50-thread DNSBL budget is split across blacklist
+  targets (`max_workers = 50 // n_targets`) so the multi-IP fan-out does not
+  multiply the process thread count (review finding, PR #19).
+- `assessor.py`: `_provider_zone()` recognises common multi-label public
+  suffixes (`co.uk`, `com.au`, …) so two providers under the same ccTLD
+  suffix are treated as distinct (review finding, PR #19).
+- `checks/smtp/_check.py`: PTR address selection extracted into a testable
+  `_ptr_ip()` helper with direct unit tests (review finding, PR #19).
 
 ---
 

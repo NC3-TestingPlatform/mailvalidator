@@ -8,7 +8,7 @@ after the module was split into sub-modules.
 from __future__ import annotations
 
 # Public entry point
-from ._check import _connect_or_fallback, _SMTP_FALLBACK_PORTS, check_smtp
+from ._check import _connect_or_fallback, _ptr_ip, _SMTP_FALLBACK_PORTS, check_smtp
 
 # _cert
 from ._cert import _cert_info, _check_certificate
@@ -71,6 +71,7 @@ __all__ = [
     "_check_pqc_certificate",
     "_PQC_SIG_OIDS",
     "_connect_or_fallback",
+    "_ptr_ip",
     "_SMTP_FALLBACK_PORTS",
     "_cert_info",
     "_check_banner_fqdn",
