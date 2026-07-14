@@ -11,6 +11,20 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.3.3] — 2026-07-14
+
+### Fixed
+- `verdict.py`: with multiple blacklist targets (introduced in 0.3.0), the
+  generic ``(check_name, severity)`` deduplication kept only the **first**
+  IP's **first** DNSBL zone in the verdict panel — other listed IPs and
+  zones were silently dropped. Blacklist findings are now merged into a
+  single per-IP-aware action naming every listed IP with the zones it
+  appears on (``Fix Blacklist Status: 2 IPs are listed on DNSBL(s) —
+  1.2.3.4 (zone-a, zone-b); 5.6.7.8 (zone-a). Request delisting.``).
+  Penalty weight is unchanged (one CRITICAL action).
+
+---
+
 ## [0.3.2] — 2026-07-14
 
 ### Changed
@@ -467,7 +481,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.11...v0.3.0
