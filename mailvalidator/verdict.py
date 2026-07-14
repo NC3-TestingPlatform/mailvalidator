@@ -441,6 +441,41 @@ def _collect_checks(report: MailReport) -> list[CheckResult]:
     return collected
 
 
+def _blacklist_actions(report: MailReport) -> list[VerdictAction]:
+    """Build a single merged verdict action for DNSBL listings.
+
+    Blacklist results are per-IP (one :class:`~mailvalidator.models.BlacklistResult`
+    per checked MX/provider IP), all sharing the check name ``"Blacklist
+    Status"``.  Left to the generic ``(check_name, severity)`` deduplication,
+    only the first IP's first zone would survive in the verdict panel —
+    hiding both the other listed IPs and their zones.  This helper emits one
+    action that names every listed IP together with the DNSBL zones it
+    appears on.
+
+    :param report: Full assessment report.
+    :type report: ~mailvalidator.models.MailReport
+    :returns: A one-element list when at least one checked IP is listed,
+        otherwise an empty list.
+    :rtype: list[VerdictAction]
+    """
+    listed = [(bl.ip, bl.listed_on) for bl in report.blacklist if bl.listed_on]
+    if not listed:
+        return []
+    parts = [f"{ip} ({', '.join(zones)})" for ip, zones in listed]
+    if len(listed) == 1:
+        text = (
+            f"Fix Blacklist Status: {parts[0]} is listed on DNSBL(s); "
+            "request delisting."
+        )
+    else:
+        text = (
+            f"Fix Blacklist Status: {len(listed)} IPs are listed on DNSBL(s) — "
+            f"{'; '.join(parts)}. Request delisting."
+        )
+    severity = _lookup_priority("Blacklist Status") or VerdictSeverity.CRITICAL
+    return [VerdictAction(text=text, severity=severity, check_name="Blacklist Status")]
+
+
 def _merge_mx_dnssec_actions(
     actions: list[VerdictAction], domain: str
 ) -> list[VerdictAction]:
@@ -534,6 +569,11 @@ def extract_verdict_actions(report: MailReport) -> list[VerdictAction]:
         if check.status in _IGNORE_STATUSES:
             continue
 
+        # Blacklist results are merged into one per-IP-aware action by
+        # _blacklist_actions() below; skip the generic path for them.
+        if check.name == "Blacklist Status":
+            continue
+
         # Suppress cipher-suite and cipher-order issues for TLS versions that
         # are already flagged for removal — disabling the version subsumes all
         # cipher concerns for it and avoids redundant action items.
@@ -549,6 +589,8 @@ def extract_verdict_actions(report: MailReport) -> list[VerdictAction]:
         sev = _context_severity(check, base_sev)
         text = _format_verdict_text(check)
         actions.append(VerdictAction(text=text, severity=sev, check_name=check.name))
+
+    actions.extend(_blacklist_actions(report))
 
     actions = _merge_mx_dnssec_actions(actions, report.domain)
     actions = _deduplicate_actions(actions)

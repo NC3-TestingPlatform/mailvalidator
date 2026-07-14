@@ -767,4 +767,8 @@ item to avoid noise — for example, a STARTTLS issue on three MX servers appear
 only once.  Per-MX-host DNSSEC findings (`DNSSEC (mx1.example.com)`, …) are
 likewise merged into a single action per severity, annotated with the number
 of affected MX hosts; the email domain's own DNSSEC finding stays separate
-because it is under the domain owner's control.
+because it is under the domain owner's control.  DNSBL listings are merged
+into one action that names **every** listed IP together with the zones it
+appears on (e.g. `2 IPs are listed on DNSBL(s) — 1.2.3.4 (zen.spamhaus.org);
+5.6.7.8 (dnsbl-3.uceprotect.net)`), so no listed IP is hidden by the
+collapse.

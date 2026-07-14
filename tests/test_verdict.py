@@ -670,10 +670,68 @@ class TestExtractVerdictActions:
     def test_blacklist_check_included(self):
         r = _empty_report()
         bl = BlacklistResult(ip="1.2.3.4")
+        bl.listed_on = ["zen.spamhaus.example"]
         bl.checks = [_check("Blacklist Status", Status.ERROR)]
         r.blacklist = [bl]
         actions = extract_verdict_actions(r)
         assert any(a.check_name == "Blacklist Status" for a in actions)
+
+    def test_blacklist_single_ip_action_names_ip_and_zones(self):
+        r = _empty_report()
+        bl = BlacklistResult(ip="1.2.3.4")
+        bl.listed_on = ["dnsbl-3.uceprotect.example", "dnsbl.justspam.example"]
+        bl.checks = [_check("Blacklist Status", Status.ERROR)]
+        r.blacklist = [bl]
+        actions = extract_verdict_actions(r)
+        action = next(a for a in actions if a.check_name == "Blacklist Status")
+        assert action.severity == VerdictSeverity.CRITICAL
+        assert "1.2.3.4" in action.text
+        assert "dnsbl-3.uceprotect.example" in action.text
+        assert "dnsbl.justspam.example" in action.text
+
+    def test_blacklist_multiple_listed_ips_merged_into_one_action(self):
+        """Three listed IPs must yield ONE action naming every IP and its
+        zones — not the first IP's first zone only."""
+        r = _empty_report()
+        for ip, zones in [
+            ("188.165.36.237", ["dnsbl-3.uceprotect.example", "dnsbl.justspam.example"]),
+            ("87.98.160.167", ["dnsbl-3.uceprotect.example"]),
+            ("91.121.53.175", ["dnsbl-3.uceprotect.example"]),
+        ]:
+            bl = BlacklistResult(ip=ip)
+            bl.listed_on = zones
+            bl.checks = [_check("Blacklist Status", Status.ERROR)]
+            r.blacklist.append(bl)
+        actions = extract_verdict_actions(r)
+        bl_actions = [a for a in actions if a.check_name == "Blacklist Status"]
+        assert len(bl_actions) == 1
+        text = bl_actions[0].text
+        assert "3 IPs" in text
+        for ip in ("188.165.36.237", "87.98.160.167", "91.121.53.175"):
+            assert ip in text
+        assert "dnsbl.justspam.example" in text
+
+    def test_blacklist_clean_ips_produce_no_action(self):
+        r = _empty_report()
+        for ip in ("1.1.1.1", "2.2.2.2"):
+            bl = BlacklistResult(ip=ip)
+            bl.checks = [_check("Blacklist Status", Status.OK)]
+            r.blacklist.append(bl)
+        actions = extract_verdict_actions(r)
+        assert not any(a.check_name == "Blacklist Status" for a in actions)
+
+    def test_blacklist_mixed_clean_and_listed_only_names_listed(self):
+        r = _empty_report()
+        clean = BlacklistResult(ip="1.1.1.1")
+        clean.checks = [_check("Blacklist Status", Status.OK)]
+        listed = BlacklistResult(ip="9.9.9.9")
+        listed.listed_on = ["dnsbl.example"]
+        listed.checks = [_check("Blacklist Status", Status.ERROR)]
+        r.blacklist = [clean, listed]
+        actions = extract_verdict_actions(r)
+        action = next(a for a in actions if a.check_name == "Blacklist Status")
+        assert "9.9.9.9" in action.text
+        assert "1.1.1.1" not in action.text
 
     def test_cipher_suites_suppressed_for_deprecated_tls_version(self):
         # When TLS Versions flags TLSv1 for removal, Cipher Suites (TLSv1)
