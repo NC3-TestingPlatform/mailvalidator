@@ -354,7 +354,7 @@ class TestPrintFullReport:
             b.total_checked = 5
             b.listed_on = []
             b.checks = []
-            r.blacklist = b
+            r.blacklist = [b]
         if dnssec:
             r.dnssec_domain = DNSSECResult(domain="example.com")
             r.dnssec_domain.checks = [
@@ -386,6 +386,19 @@ class TestPrintFullReport:
             print_full_report(self._report(smtp=True, blacklist=True))
         assert "mail.example.com" in buf.getvalue()
         assert "1.2.3.4" in buf.getvalue()
+
+    def test_with_multiple_blacklist_results(self):
+        r = self._report(blacklist=True)
+        b2 = BlacklistResult(ip="5.6.7.8")
+        b2.total_checked = 5
+        b2.listed_on = []
+        b2.checks = []
+        r.blacklist.append(b2)
+        con, buf = console_capture()
+        with _patch_console(con):
+            print_full_report(r)
+        assert "1.2.3.4" in buf.getvalue()
+        assert "5.6.7.8" in buf.getvalue()
 
     def test_with_dnssec_sections(self):
         con, buf = console_capture()

@@ -31,9 +31,15 @@ def _report(
     errors: list[str] | None = None,
     warnings: list[str] | None = None,
     chain: bool = True,
+    signed: bool = True,
     trust_anchor_keys: list[str] | None = None,
 ) -> DNSSECReport:
-    """Build a minimal DNSSECReport for a given chainvalidator status."""
+    """Build a minimal DNSSECReport for a given chainvalidator status.
+
+    When *signed* is ``True`` (default) the innermost chain link carries a
+    DNSKEY record, i.e. the zone itself is signed.  ``signed=False`` models a
+    plain unsigned zone (chainvalidator still reports INSECURE for those).
+    """
     r = DNSSECReport(
         domain=domain,
         record_type="SOA",
@@ -45,7 +51,10 @@ def _report(
     if chain:
         r.chain.append(ChainLink(zone=".", status=CVStatus.SECURE))
         r.chain.append(ChainLink(zone="com.", status=CVStatus.SECURE))
-        r.chain.append(ChainLink(zone=f"{domain}.", status=cv_status))
+        leaf_link = ChainLink(zone=f"{domain}.", status=cv_status)
+        if signed:
+            leaf_link.dnskeys.append("DNSKEY=12345/SEP")
+        r.chain.append(leaf_link)
     return r
 
 
@@ -112,6 +121,31 @@ class TestDnssecCheck:
         )
         assert check.status == Status.WARNING
         assert len(check.details) > 0
+
+    def test_insecure_unsigned_zone_gives_not_found(self):
+        """INSECURE with no DNSKEY on the leaf zone is plain unsigned."""
+        check = _dnssec_check(
+            _report(cv_status=CVStatus.INSECURE, signed=False, warnings=["no DS"]),
+            "example.com",
+        )
+        assert check.status == Status.NOT_FOUND
+        assert check.value == "unsigned"
+
+    def test_insecure_unsigned_zone_with_empty_chain_gives_not_found(self):
+        check = _dnssec_check(
+            _report(cv_status=CVStatus.INSECURE, chain=False), "example.com"
+        )
+        assert check.status == Status.NOT_FOUND
+        assert check.value == "unsigned"
+
+    def test_insecure_unsigned_zone_dane_note(self):
+        check = _dnssec_check(
+            _report(cv_status=CVStatus.INSECURE, signed=False),
+            "mx1.example.com",
+            dane_note=True,
+        )
+        assert check.status == Status.NOT_FOUND
+        assert any("DANE" in d for d in check.details)
 
     def test_bogus_gives_error(self):
         check = _dnssec_check(

@@ -15,6 +15,7 @@ import pytest
 
 from mailvalidator.checks.smtp import (
     _connect_or_fallback,
+    _ptr_ip,
     _cert_info,
     _check_banner_fqdn,
     _check_caa,
@@ -2134,6 +2135,31 @@ class TestTagHelper:
 
 
 # ── _connect_or_fallback ──────────────────────────────────────────────────────
+
+
+class TestPtrIp:
+    def test_caller_supplied_ip_used_verbatim(self):
+        with patch(
+            "mailvalidator.checks.smtp._check.socket.gethostbyname"
+        ) as mock_resolve:
+            assert _ptr_ip("mail.example.com", "9.9.9.9") == "9.9.9.9"
+        mock_resolve.assert_not_called()
+
+    def test_resolves_host_when_ip_is_none(self):
+        with patch(
+            "mailvalidator.checks.smtp._check.socket.gethostbyname",
+            return_value="1.2.3.4",
+        ):
+            assert _ptr_ip("mail.example.com", None) == "1.2.3.4"
+
+    def test_falls_back_to_host_on_resolution_failure(self):
+        import socket as _socket
+
+        with patch(
+            "mailvalidator.checks.smtp._check.socket.gethostbyname",
+            side_effect=_socket.gaierror("no address"),
+        ):
+            assert _ptr_ip("mail.example.com", None) == "mail.example.com"
 
 
 class TestConnectOrFallback:

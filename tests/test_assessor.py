@@ -5,7 +5,12 @@ from __future__ import annotations
 import socket as _socket
 from unittest.mock import MagicMock, patch
 
-from mailvalidator.assessor import _resolve_mx_ips, assess
+from mailvalidator.assessor import (
+    _primary_ip,
+    _provider_zone,
+    _select_probe_records,
+    assess,
+)
 from mailvalidator.models import (
     BIMIResult,
     DKIMResult,
@@ -19,36 +24,106 @@ from mailvalidator.models import (
 from tests.conftest import make_mx_result, make_simple_result
 
 
-class TestResolveMxIps:
-    def test_extracts_ipv4(self):
-        rec = MXRecord(
-            priority=10, exchange="mail.example.com", ip_addresses=["1.2.3.4"]
+class TestProviderZone:
+    def test_last_two_labels(self):
+        assert _provider_zone("aspmx.l.google.com") == "google.com"
+
+    def test_trailing_dot_and_case(self):
+        assert _provider_zone("MX2.Mail.OVH.NET.") == "ovh.net"
+
+    def test_single_label(self):
+        assert _provider_zone("localhost") == "localhost"
+
+    def test_multi_label_public_suffix(self):
+        assert _provider_zone("mx1.acme.co.uk") == "acme.co.uk"
+
+    def test_distinct_providers_under_same_public_suffix(self):
+        assert _provider_zone("mx1.acme.co.uk") != _provider_zone(
+            "mx1.othercorp.co.uk"
         )
-        assert _resolve_mx_ips([rec]) == ["1.2.3.4"]
 
-    def test_skips_ipv6(self):
-        rec = MXRecord(
-            priority=10, exchange="mail.example.com", ip_addresses=["2001:db8::1"]
-        )
-        assert _resolve_mx_ips([rec]) == []
+    def test_bare_public_suffix(self):
+        assert _provider_zone("co.uk") == "co.uk"
 
-    def test_deduplicates(self):
-        r1 = MXRecord(priority=10, exchange="mx1.example.com", ip_addresses=["1.2.3.4"])
-        r2 = MXRecord(priority=20, exchange="mx2.example.com", ip_addresses=["1.2.3.4"])
-        assert _resolve_mx_ips([r1, r2]) == ["1.2.3.4"]
 
-    def test_empty_records(self):
-        assert _resolve_mx_ips([]) == []
+class TestSelectProbeRecords:
+    @staticmethod
+    def _rec(priority: int, exchange: str) -> MXRecord:
+        return MXRecord(priority=priority, exchange=exchange, ip_addresses=[])
 
-    def test_multiple_ips_per_record(self):
+    def test_covers_distinct_providers_before_filling(self):
+        records = [
+            self._rec(1, "aspmx.l.google.com"),
+            self._rec(5, "alt1.aspmx.l.google.com"),
+            self._rec(5, "alt2.aspmx.l.google.com"),
+            self._rec(10, "alt3.aspmx.l.google.com"),
+            self._rec(50, "mx2.mail.ovh.net"),
+            self._rec(100, "mx3.mail.ovh.net"),
+        ]
+        selected = _select_probe_records(records)
+        exchanges = [r.exchange for r in selected]
+        assert exchanges == [
+            "aspmx.l.google.com",
+            "alt1.aspmx.l.google.com",
+            "mx2.mail.ovh.net",
+        ]
+
+    def test_preserves_priority_order(self):
+        records = [
+            self._rec(1, "a.one.example"),
+            self._rec(2, "b.two.example"),
+            self._rec(3, "c.three.example"),
+            self._rec(4, "d.four.example"),
+        ]
+        selected = _select_probe_records(records)
+        assert [r.exchange for r in selected] == [
+            "a.one.example",
+            "b.two.example",
+            "c.three.example",
+        ]
+
+    def test_fewer_records_than_limit(self):
+        records = [self._rec(10, "mail.example.com")]
+        assert _select_probe_records(records) == records
+
+    def test_empty(self):
+        assert _select_probe_records([]) == []
+
+    def test_custom_limit(self):
+        records = [self._rec(i, f"mx{i}.example.com") for i in range(1, 5)]
+        assert len(_select_probe_records(records, limit=2)) == 2
+
+    def test_cctld_providers_treated_as_distinct(self):
+        records = [
+            self._rec(10, "mx1.acme.co.uk"),
+            self._rec(20, "mx2.acme.co.uk"),
+            self._rec(30, "mx1.othercorp.co.uk"),
+        ]
+        selected = _select_probe_records(records, limit=2)
+        assert [r.exchange for r in selected] == [
+            "mx1.acme.co.uk",
+            "mx1.othercorp.co.uk",
+        ]
+
+
+class TestPrimaryIp:
+    def test_prefers_ipv4(self):
         rec = MXRecord(
             priority=10,
             exchange="mail.example.com",
-            ip_addresses=["1.2.3.4", "5.6.7.8"],
+            ip_addresses=["2001:db8::1", "1.2.3.4"],
         )
-        result = _resolve_mx_ips([rec])
-        assert "1.2.3.4" in result
-        assert "5.6.7.8" in result
+        assert _primary_ip(rec) == "1.2.3.4"
+
+    def test_falls_back_to_ipv6(self):
+        rec = MXRecord(
+            priority=10, exchange="mail.example.com", ip_addresses=["2001:db8::1"]
+        )
+        assert _primary_ip(rec) == "2001:db8::1"
+
+    def test_no_addresses(self):
+        rec = MXRecord(priority=10, exchange="mail.example.com", ip_addresses=[])
+        assert _primary_ip(rec) is None
 
 
 class TestAssess:
@@ -155,7 +230,90 @@ class TestAssess:
                 "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
             ):
                 assess("example.com")
-        mock_bl.assert_called_once_with("9.9.9.9")
+        mock_bl.assert_called_once_with("9.9.9.9", max_workers=50)
+
+    def test_blacklist_checks_one_ip_per_provider(self):
+        records = [
+            MXRecord(
+                priority=1, exchange="aspmx.l.google.com", ip_addresses=["1.1.1.1"]
+            ),
+            MXRecord(
+                priority=5,
+                exchange="alt1.aspmx.l.google.com",
+                ip_addresses=["2.2.2.2"],
+            ),
+            MXRecord(
+                priority=50, exchange="mx2.mail.ovh.net", ip_addresses=["3.3.3.3"]
+            ),
+        ]
+        mock_bl = MagicMock(return_value=MagicMock())
+        with self._ctx(
+            {"check_smtp": MagicMock(return_value=MagicMock()), "check_blacklist": mock_bl}
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                report = assess("example.com")
+        checked = {call.args[0] for call in mock_bl.call_args_list}
+        assert checked == {"1.1.1.1", "2.2.2.2", "3.3.3.3"}
+        assert len(report.blacklist) == 3
+        # The DNSBL thread budget is split across the three targets.
+        assert all(
+            call.kwargs["max_workers"] == 16 for call in mock_bl.call_args_list
+        )
+
+    def test_blacklist_deduplicates_shared_ips(self):
+        records = [
+            MXRecord(priority=10, exchange="mx1.example.com", ip_addresses=["9.9.9.9"]),
+            MXRecord(priority=20, exchange="mx2.example.com", ip_addresses=["9.9.9.9"]),
+        ]
+        mock_bl = MagicMock(return_value=MagicMock())
+        with self._ctx(
+            {"check_smtp": MagicMock(return_value=MagicMock()), "check_blacklist": mock_bl}
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                assess("example.com")
+        mock_bl.assert_called_once_with("9.9.9.9", max_workers=50)
+
+    def test_one_failing_blacklist_target_does_not_discard_report(self):
+        records = [
+            MXRecord(
+                priority=1, exchange="aspmx.l.google.com", ip_addresses=["1.1.1.1"]
+            ),
+            MXRecord(
+                priority=50, exchange="mx2.mail.ovh.net", ip_addresses=["3.3.3.3"]
+            ),
+        ]
+        ok_result = MagicMock()
+        mock_bl = MagicMock(side_effect=[ok_result, RuntimeError("resolver down")])
+        with self._ctx(
+            {"check_smtp": MagicMock(return_value=MagicMock()), "check_blacklist": mock_bl}
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                report = assess("example.com")
+        assert report.blacklist == [ok_result]
+        assert isinstance(report, MailReport)
+
+    def test_smtp_receives_resolved_mx_ip(self):
+        records = [
+            MXRecord(priority=10, exchange="mail.example.com", ip_addresses=["9.9.9.9"])
+        ]
+        mock_smtp = MagicMock(return_value=MagicMock())
+        with self._ctx(
+            {
+                "check_smtp": mock_smtp,
+                "check_blacklist": MagicMock(return_value=MagicMock()),
+            }
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                assess("example.com")
+        mock_smtp.assert_called_once_with("mail.example.com", 25, ip="9.9.9.9")
 
     def test_blacklist_falls_back_to_a_record(self):
         """When MX has no IPv4 IPs, blacklist uses gethostbyname(domain)."""
@@ -171,7 +329,7 @@ class TestAssess:
                 "mailvalidator.assessor.socket.gethostbyname", return_value="3.3.3.3"
             ):
                 assess("example.com")
-        mock_bl.assert_called_once_with("3.3.3.3")
+        mock_bl.assert_called_once_with("3.3.3.3", max_workers=50)
 
     def test_blacklist_skipped_when_gethostbyname_fails(self):
         mock_bl = MagicMock()
@@ -187,4 +345,4 @@ class TestAssess:
             ):
                 report = assess("example.com")
         mock_bl.assert_not_called()
-        assert report.blacklist is None
+        assert report.blacklist == []

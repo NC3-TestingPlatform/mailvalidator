@@ -590,21 +590,6 @@ provider.  Ensure DS records are published in the parent TLD zone.
 
 ---
 
-### Duplicate Priorities (MX)
-
-**What it checks:** Whether multiple MX records share the same priority value.
-
-**Why MEDIUM:**  
-Duplicate priorities are not forbidden by RFC 5321 but indicate an
-inconsistency in the MX configuration.  Equal-priority MX hosts share load
-equally; this may be intentional, but is frequently an oversight that affects
-routing predictability.
-
-**Remediation:** Review MX records and assign distinct priority values unless
-equal-priority load-balancing is explicitly desired.
-
----
-
 ### Banner FQDN
 
 **What it checks:** Whether the `220` greeting banner includes the server's
@@ -699,6 +684,7 @@ They are included for visibility and operational awareness.
 | Reporting URI                    | BIMI/DMARC/TLSRPT reporting address; operational choice                                                    |
 | Logo URL (l=)                    | BIMI logo URL; operational detail                                                                          |
 | DNS Version                      | DNS query metadata; informational                                                                           |
+| Duplicate Priorities             | Equal-preference MX records are valid (RFC 5321 §5.1) and commonly used for load distribution; INFO only  |
 | DANE – DNSSEC Prerequisite       | Noted when DANE records exist but DNSSEC is not signed; DNSSEC itself carries the MEDIUM finding           |
 | TLS Inspection                   | Aggregate summary label; individual cipher/version checks carry the penalties                              |
 | PQC Certificate                  | Reports whether the server certificate uses a post-quantum signature algorithm (ML-DSA, SLH-DSA, FN-DSA). `GOOD` if a PQC OID (NIST FIPS 204/205 or provisional IETF/OQS) is detected; `INFO` if the certificate uses a classical algorithm (RSA / ECDSA). No penalty is applied because public CAs do not yet issue PQC certificates at scale — this is a forward-looking readiness indicator that complements **PQC Key Exchange**. Revisit this severity once PQC certificate issuance becomes mainstream (expected 2026–2027). |
@@ -752,4 +738,7 @@ Action verbs indicate the type of issue:
 
 Duplicate findings across multiple MX servers are collapsed to a single action
 item to avoid noise — for example, a STARTTLS issue on three MX servers appears
-only once.
+only once.  Per-MX-host DNSSEC findings (`DNSSEC (mx1.example.com)`, …) are
+likewise merged into a single action per severity, annotated with the number
+of affected MX hosts; the email domain's own DNSSEC finding stays separate
+because it is under the domain owner's control.

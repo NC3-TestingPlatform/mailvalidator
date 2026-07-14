@@ -325,7 +325,8 @@ class MailReport:
     :param bimi: BIMI record validation results.
     :param tlsrpt: TLSRPT record validation results.
     :param mta_sts: MTA-STS DNS record and policy file results.
-    :param blacklist: DNS blacklist check results for the primary MX IP.
+    :param blacklist: DNS blacklist check results, one per checked MX IP
+        (one IP per distinct mail provider, up to three).
     :param dnssec_domain: DNSSEC existence and validity for the email address domain.
     :param dnssec_mx: DNSSEC existence and validity for each MX server domain.
     """
@@ -339,7 +340,7 @@ class MailReport:
     bimi: BIMIResult | None = None
     tlsrpt: TLSRPTResult | None = None
     mta_sts: MTASTSResult | None = None
-    blacklist: BlacklistResult | None = None
+    blacklist: list[BlacklistResult] = field(default_factory=list)
     dnssec_domain: DNSSECResult | None = None
     dnssec_mx: DNSSECResult | None = None
 

@@ -98,7 +98,9 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "DANE – Matching Type": VerdictSeverity.MEDIUM,
     "DANE – Rollover Scheme": VerdictSeverity.MEDIUM,
     "DNSSEC": VerdictSeverity.MEDIUM,
-    "Duplicate Priorities": VerdictSeverity.MEDIUM,
+    # Equal-preference MX records are valid RFC 5321 load distribution —
+    # informational only (the check itself reports Status.INFO).
+    "Duplicate Priorities": None,
     # RFC presentation compliance — misconfigured but no direct security impact
     "Banner FQDN": VerdictSeverity.MEDIUM,
     "EHLO Domain": VerdictSeverity.MEDIUM,
@@ -419,15 +421,56 @@ def _collect_checks(report: MailReport) -> list[CheckResult]:
         report.bimi,
         report.tlsrpt,
         report.mta_sts,
-        report.blacklist,
         report.dnssec_domain,
         report.dnssec_mx,
     ):
         if result_obj is not None:
             collected.extend(result_obj.checks)
+    for bl_result in report.blacklist:
+        collected.extend(bl_result.checks)
     for smtp_result in report.smtp:
         collected.extend(smtp_result.checks)
     return collected
+
+
+def _merge_mx_dnssec_actions(
+    actions: list[VerdictAction], domain: str
+) -> list[VerdictAction]:
+    """Collapse per-MX-host DNSSEC actions into one action per severity.
+
+    ``check_dnssec_mx`` emits one check per MX exchange hostname
+    (``"DNSSEC (mx1.example.com)"``, …).  When several MX hosts share the
+    same DNSSEC problem this floods the verdict panel with near-identical
+    rows and inflates the penalty score for what is a single finding.  The
+    first action of each severity survives and is annotated with the number
+    of affected MX hosts; the email domain's own DNSSEC action
+    (``"DNSSEC (<domain>)"``) is never merged.
+
+    :param actions: Raw list of actions (order preserved).
+    :type actions: list[VerdictAction]
+    :param domain: The assessed email address domain.
+    :type domain: str
+    :returns: List with per-MX DNSSEC actions merged.
+    :rtype: list[VerdictAction]
+    """
+    domain_check = f"DNSSEC ({domain})"
+    merged: list[VerdictAction] = []
+    first_by_sev: dict[VerdictSeverity, VerdictAction] = {}
+    count_by_sev: dict[VerdictSeverity, int] = {}
+
+    for action in actions:
+        if action.check_name.startswith("DNSSEC (") and action.check_name != domain_check:
+            if action.severity in first_by_sev:
+                count_by_sev[action.severity] += 1
+                continue
+            first_by_sev[action.severity] = action
+            count_by_sev[action.severity] = 1
+        merged.append(action)
+
+    for sev, first in first_by_sev.items():
+        if count_by_sev[sev] > 1:
+            first.text += f" (applies to {count_by_sev[sev]} MX hosts)"
+    return merged
 
 
 def _deduplicate_actions(actions: list[VerdictAction]) -> list[VerdictAction]:
@@ -462,9 +505,11 @@ def extract_verdict_actions(report: MailReport) -> list[VerdictAction]:
     Checks whose name maps to ``None`` in :data:`_PRIORITY` (explicitly
     informational) are also skipped.  Unknown check names are skipped too.
 
-    Duplicate ``(check_name, severity)`` pairs are collapsed via
-    :func:`_deduplicate_actions` to avoid noisy repetition across MX servers.
-    The result is sorted from most to least urgent.
+    Per-MX-host DNSSEC actions are collapsed into one action per severity via
+    :func:`_merge_mx_dnssec_actions`, then duplicate ``(check_name, severity)``
+    pairs are collapsed via :func:`_deduplicate_actions` to avoid noisy
+    repetition across MX servers.  The result is sorted from most to least
+    urgent.
 
     :param report: Full assessment report.
     :type report: ~mailvalidator.models.MailReport
@@ -497,6 +542,7 @@ def extract_verdict_actions(report: MailReport) -> list[VerdictAction]:
         text = _format_verdict_text(check)
         actions.append(VerdictAction(text=text, severity=sev, check_name=check.name))
 
+    actions = _merge_mx_dnssec_actions(actions, report.domain)
     actions = _deduplicate_actions(actions)
     actions.sort(key=lambda a: _SEVERITY_ORDER[a.severity])
     return actions

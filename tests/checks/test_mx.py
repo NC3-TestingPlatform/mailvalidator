@@ -52,7 +52,7 @@ class TestMXExtra:
                     result = check_mx("example.com")
         assert len(result.records) == 1
 
-    def test_duplicate_priority_warns(self):
+    def test_duplicate_priority_is_informational(self):
         records_raw = ["10 mail1.example.com.", "10 mail2.example.com."]
         with patch("mailvalidator.checks.mx.resolve", return_value=records_raw):
             with patch("mailvalidator.checks.mx.get_authoritative_ns", return_value=[]):
@@ -60,10 +60,9 @@ class TestMXExtra:
                     "mailvalidator.checks.mx.resolve_a", return_value=["1.2.3.4"]
                 ):
                     result = check_mx("example.com")
-        assert any(
-            c.name == "Duplicate Priorities" and c.status == Status.WARNING
-            for c in result.checks
-        )
+        dup = next(c for c in result.checks if c.name == "Duplicate Priorities")
+        assert dup.status == Status.INFO
+        assert any("RFC 5321" in d for d in dup.details)
 
     def test_non_integer_priority_error(self):
         records_raw = ["abc mail.example.com."]

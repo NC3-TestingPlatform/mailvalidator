@@ -11,6 +11,52 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.3.0] — 2026-07-14
+
+### Fixed
+- `checks/dnssec.py`: zones without any DNSKEY records were labelled
+  **"signed — insecure"** (WARNING) because chainvalidator reports INSECURE
+  for any delegation lacking a DS record. Plain unsigned zones (e.g.
+  `google.com`) are now correctly reported as **"unsigned"** (NOT_FOUND);
+  "signed — insecure" is reserved for genuine islands of security (DNSKEY
+  present but no DS in the parent zone).
+- `checks/smtp/_check.py`: the Reverse DNS (PTR) check re-resolved the MX
+  hostname, so the checked IP could differ from the one shown in the MX
+  section when a provider rotates A records (e.g. Google). `check_smtp()`
+  accepts a new keyword-only `ip` parameter and `assess()` now passes the
+  MX-resolved address.
+
+### Changed
+- `assessor.py`: SMTP probes now select up to three MX hosts covering
+  **distinct mail providers** (last-two-DNS-labels heuristic) instead of the
+  first three by priority, so backup MX hosts operated by a different
+  provider are always probed.
+- `assessor.py` / `models.py`: the DNSBL blacklist check now runs on one IP
+  per selected provider (up to three) instead of only the first MX IP.
+  **Breaking:** `MailReport.blacklist` is now `list[BlacklistResult]`
+  (was `BlacklistResult | None`); the `--json` `blacklist` key is now an
+  array.
+- `verdict.py`: per-MX-host DNSSEC verdict actions are merged into a single
+  action per severity, annotated with *"(applies to N MX hosts)"*, so
+  reports with many MX hosts no longer accumulate near-identical MEDIUM rows
+  (and no longer over-penalise the grade for a single underlying finding).
+- `checks/mx.py` / `verdict.py`: **Duplicate Priorities** downgraded from
+  WARNING (MEDIUM verdict action) to INFO — equal-preference MX records are
+  valid RFC 5321 §5.1 load distribution and commonly intentional.
+- `assessor.py`: blacklist results are collected with per-target error
+  isolation — one failing DNSBL target is logged and skipped instead of
+  discarding the whole report (review finding, PR #19).
+- `assessor.py`: the 50-thread DNSBL budget is split across blacklist
+  targets (`max_workers = 50 // n_targets`) so the multi-IP fan-out does not
+  multiply the process thread count (review finding, PR #19).
+- `assessor.py`: `_provider_zone()` recognises common multi-label public
+  suffixes (`co.uk`, `com.au`, …) so two providers under the same ccTLD
+  suffix are treated as distinct (review finding, PR #19).
+- `checks/smtp/_check.py`: PTR address selection extracted into a testable
+  `_ptr_ip()` helper with direct unit tests (review finding, PR #19).
+
+---
+
 ## [0.2.11] — 2026-07-08
 
 ### Fixed
@@ -387,7 +433,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.8...v0.2.9

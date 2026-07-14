@@ -71,10 +71,35 @@ def _tag(checks: list[CheckResult], start: int, section: str) -> None:
         cr.section = section
 
 
+def _ptr_ip(host: str, ip: str | None) -> str:
+    """Return the address to use for the reverse DNS (PTR) check.
+
+    A caller-supplied *ip* (e.g. the address resolved during MX lookup) is
+    used verbatim so the PTR check matches the MX report even when the
+    host's A records rotate between lookups.  Otherwise *host* is resolved
+    here, falling back to the host string itself when resolution fails.
+
+    :param host: Mail server hostname or IP address.
+    :type host: str
+    :param ip: Already-resolved address of *host*, or ``None``.
+    :type ip: str or None
+    :returns: Address (or host string) for the PTR lookup.
+    :rtype: str
+    """
+    if ip is not None:
+        return ip
+    try:
+        return socket.gethostbyname(host)
+    except socket.gaierror:
+        return host
+
+
 def check_smtp(
     host: str,
     port: int = 25,
     helo_domain: str = "mailvalidator.local",
+    *,
+    ip: str | None = None,
 ) -> SMTPDiagResult:  # pragma: no cover
     """Run all SMTP diagnostics for *host*:*port* and return a populated result.
 
@@ -90,16 +115,17 @@ def check_smtp(
     :param helo_domain: Domain name sent in the EHLO greeting.
         Defaults to ``"mailvalidator.local"``.
     :type helo_domain: str
+    :param ip: Already-resolved IP address of *host*, used for the reverse
+        DNS (PTR) check.  Pass the address obtained during MX resolution so
+        the PTR check matches the MX report even when the host's A records
+        rotate between lookups.  When ``None``, *host* is resolved here.
+    :type ip: str or None
     :returns: A fully populated :class:`~mailvalidator.models.SMTPDiagResult`.
     :rtype: ~mailvalidator.models.SMTPDiagResult
     """
     result = SMTPDiagResult(host=host, port=port)
 
-    # Resolve to IP for PTR lookup (non-fatal; fall back to host string)
-    try:
-        ip = socket.gethostbyname(host)
-    except socket.gaierror:
-        ip = host
+    ip = _ptr_ip(host, ip)
 
     # -------------------------------------------------------------------------
     # Protocol section
