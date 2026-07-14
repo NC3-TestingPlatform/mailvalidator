@@ -24,7 +24,13 @@ from mailvalidator.checks.mx import check_mx
 from mailvalidator.checks.smtp import check_smtp
 from mailvalidator.checks.spf import check_spf
 from mailvalidator.checks.tlsrpt import check_tlsrpt
-from mailvalidator.models import MailReport, MXRecord
+from mailvalidator.models import (
+    BlacklistResult,
+    CheckResult,
+    MailReport,
+    MXRecord,
+    Status,
+)
 
 logger = logging.getLogger("mailvalidator")
 
@@ -168,11 +174,28 @@ def assess(
                 _ip = _primary_ip(_rec)
                 if _ip and _ip not in _bl_targets:
                     _bl_targets.append(_ip)
-        else:
+        if not _bl_targets:
+            # No MX records, or none of the MX targets resolve (dangling MX)
+            # — fall back to the domain's own address record.
             try:
                 _bl_targets = [socket.gethostbyname(domain)]
             except socket.gaierror:
                 _bl_targets = []
+        if not _bl_targets:
+            # Never skip silently: record why no DNSBL lookup ran.
+            _skipped = BlacklistResult(ip=domain, total_checked=0)
+            _skipped.checks.append(
+                CheckResult(
+                    name="Blacklist Status",
+                    status=Status.NA,
+                    value="skipped",
+                    details=[
+                        "No resolvable MX target IP and no A record for the "
+                        "domain itself; DNSBL check skipped."
+                    ],
+                )
+            )
+            report.blacklist.append(_skipped)
         if _bl_targets:
             _cb(f"Blacklist check on {', '.join(_bl_targets)} (running in background…)")
             # Split the global DNSBL thread budget across targets so fanning

@@ -91,6 +91,49 @@ def check_mx(domain: str, *, timeout: float = 5.0) -> MXResult:
         )
     )
 
+    # --- MX target resolution (dangling-MX detection) ---
+    unresolved = [r.exchange for r in records if not r.ip_addresses]
+    n_total = len(records)
+    n_resolved = n_total - len(unresolved)
+    if not unresolved:
+        result.checks.append(
+            CheckResult(
+                name="MX Target Resolution",
+                status=Status.OK,
+                value=f"{n_resolved}/{n_total} target(s) resolve",
+            )
+        )
+    elif n_resolved == 0:
+        result.checks.append(
+            CheckResult(
+                name="MX Target Resolution",
+                status=Status.ERROR,
+                value=f"0/{n_total} target(s) resolve",
+                details=[
+                    "No MX target has an A/AAAA record — mail to this domain is "
+                    "undeliverable (dangling MX): "
+                    f"{', '.join(unresolved)}.",
+                    "A dangling MX pointing at a decommissioned provider hostname "
+                    "should be removed or re-pointed; provider-hosted names can "
+                    "be a domain-takeover risk if another customer can claim them.",
+                ],
+            )
+        )
+    else:
+        result.checks.append(
+            CheckResult(
+                name="MX Target Resolution",
+                status=Status.WARNING,
+                value=f"{n_resolved}/{n_total} target(s) resolve",
+                details=[
+                    "Some MX targets have no A/AAAA record (dangling MX): "
+                    f"{', '.join(unresolved)}. "
+                    "Senders trying these hosts fall through to the remaining "
+                    "MX records; remove or fix the stale entries."
+                ],
+            )
+        )
+
     # --- duplicate-priority note (informational) ---
     priorities = [r.priority for r in records]
     if len(priorities) != len(set(priorities)):

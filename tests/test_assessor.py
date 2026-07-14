@@ -331,7 +331,7 @@ class TestAssess:
                 assess("example.com")
         mock_bl.assert_called_once_with("3.3.3.3", max_workers=50)
 
-    def test_blacklist_skipped_when_gethostbyname_fails(self):
+    def test_blacklist_skip_is_recorded_when_gethostbyname_fails(self):
         mock_bl = MagicMock()
         with self._ctx(
             {
@@ -345,4 +345,36 @@ class TestAssess:
             ):
                 report = assess("example.com")
         mock_bl.assert_not_called()
-        assert report.blacklist == []
+        # The skip is recorded, never silent.
+        assert len(report.blacklist) == 1
+        skip = report.blacklist[0].checks[0]
+        assert skip.name == "Blacklist Status"
+        assert skip.value == "skipped"
+        assert report.blacklist[0].total_checked == 0
+
+    def test_blacklist_falls_back_to_domain_a_when_mx_targets_dangling(self):
+        """MX records exist but none resolve (dangling MX) → fall back to the
+        domain's own A record instead of silently skipping (0.3.0 regression)."""
+        records = [
+            MXRecord(
+                priority=0,
+                exchange="dead.mail.protection.example",
+                ip_addresses=[],
+            )
+        ]
+        mock_bl = MagicMock(return_value=MagicMock())
+        with self._ctx(
+            {
+                "check_smtp": MagicMock(return_value=MagicMock()),
+                "check_blacklist": mock_bl,
+            }
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                with patch(
+                    "mailvalidator.assessor.socket.gethostbyname",
+                    return_value="7.7.7.7",
+                ):
+                    assess("example.com")
+        mock_bl.assert_called_once_with("7.7.7.7", max_workers=50)

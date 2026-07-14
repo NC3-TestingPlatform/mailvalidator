@@ -557,6 +557,31 @@ class TestExtractVerdictActions:
         actions = extract_verdict_actions(r)
         assert len(actions) == 1
 
+    def test_mx_target_resolution_error_escalates_to_critical(self):
+        """No MX target resolves (dangling MX) → mail undeliverable → CRITICAL."""
+        r = _report_with_checks(
+            _check(
+                "MX Target Resolution",
+                Status.ERROR,
+                details=["No MX target has an A/AAAA record."],
+            )
+        )
+        actions = extract_verdict_actions(r)
+        action = next(a for a in actions if a.check_name == "MX Target Resolution")
+        assert action.severity == VerdictSeverity.CRITICAL
+
+    def test_mx_target_resolution_warning_stays_high(self):
+        r = _report_with_checks(
+            _check(
+                "MX Target Resolution",
+                Status.WARNING,
+                details=["Some MX targets have no A/AAAA record."],
+            )
+        )
+        actions = extract_verdict_actions(r)
+        action = next(a for a in actions if a.check_name == "MX Target Resolution")
+        assert action.severity == VerdictSeverity.HIGH
+
     def test_mx_dnssec_actions_merged_into_one(self):
         r = _empty_report()
         dm = DNSSECResult(domain="example.com")

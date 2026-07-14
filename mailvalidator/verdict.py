@@ -62,6 +62,9 @@ _PRIORITY: dict[str, VerdictSeverity | None] = {
     "Certificate Trust Chain": VerdictSeverity.CRITICAL,
     "Certificate Expiry": VerdictSeverity.CRITICAL,
     "MX Records": VerdictSeverity.CRITICAL,
+    # ERROR (no MX target resolves — dangling MX, mail undeliverable) is
+    # escalated to CRITICAL at runtime by _context_severity.
+    "MX Target Resolution": VerdictSeverity.HIGH,
     "Blacklist Status": VerdictSeverity.CRITICAL,
     # ------------------------------------------------------------------ HIGH
     # Important security gaps that should be addressed soon.
@@ -293,6 +296,9 @@ def _context_severity(check: CheckResult, base: VerdictSeverity) -> VerdictSever
 
     * ``TLS Versions`` or ``Cipher Suites`` with status ``INSUFFICIENT``
       → escalate to ``CRITICAL`` regardless of *base*.
+    * ``MX Target Resolution`` with status ``ERROR`` (no MX target resolves
+      — dangling MX, mail undeliverable) → escalate to ``CRITICAL``;
+      ``WARNING`` (some targets unresolvable) keeps the ``HIGH`` base.
 
     :param check: The check result being evaluated.
     :type check: ~mailvalidator.models.CheckResult
@@ -304,6 +310,8 @@ def _context_severity(check: CheckResult, base: VerdictSeverity) -> VerdictSever
     if check.status == Status.INSUFFICIENT and (
         check.name.startswith("TLS Versions") or check.name.startswith("Cipher Suites")
     ):
+        return VerdictSeverity.CRITICAL
+    if check.name == "MX Target Resolution" and check.status == Status.ERROR:
         return VerdictSeverity.CRITICAL
     return base
 
