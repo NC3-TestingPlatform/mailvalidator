@@ -91,14 +91,18 @@ def check_mx(domain: str, *, timeout: float = 5.0) -> MXResult:
         )
     )
 
-    # --- duplicate-priority warning ---
+    # --- duplicate-priority note (informational) ---
     priorities = [r.priority for r in records]
     if len(priorities) != len(set(priorities)):
         result.checks.append(
             CheckResult(
                 name="Duplicate Priorities",
-                status=Status.WARNING,
-                details=["Multiple MX records share the same priority value."],
+                status=Status.INFO,
+                details=[
+                    "Multiple MX records share the same priority value. "
+                    "Equal-preference MX records are valid (RFC 5321 §5.1) and "
+                    "commonly used for load distribution."
+                ],
             )
         )
 

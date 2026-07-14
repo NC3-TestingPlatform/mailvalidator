@@ -75,6 +75,8 @@ def check_smtp(
     host: str,
     port: int = 25,
     helo_domain: str = "mailvalidator.local",
+    *,
+    ip: str | None = None,
 ) -> SMTPDiagResult:  # pragma: no cover
     """Run all SMTP diagnostics for *host*:*port* and return a populated result.
 
@@ -90,16 +92,23 @@ def check_smtp(
     :param helo_domain: Domain name sent in the EHLO greeting.
         Defaults to ``"mailvalidator.local"``.
     :type helo_domain: str
+    :param ip: Already-resolved IP address of *host*, used for the reverse
+        DNS (PTR) check.  Pass the address obtained during MX resolution so
+        the PTR check matches the MX report even when the host's A records
+        rotate between lookups.  When ``None``, *host* is resolved here.
+    :type ip: str or None
     :returns: A fully populated :class:`~mailvalidator.models.SMTPDiagResult`.
     :rtype: ~mailvalidator.models.SMTPDiagResult
     """
     result = SMTPDiagResult(host=host, port=port)
 
-    # Resolve to IP for PTR lookup (non-fatal; fall back to host string)
-    try:
-        ip = socket.gethostbyname(host)
-    except socket.gaierror:
-        ip = host
+    # Resolve to IP for PTR lookup unless the caller already did (non-fatal;
+    # fall back to the host string).
+    if ip is None:
+        try:
+            ip = socket.gethostbyname(host)
+        except socket.gaierror:
+            ip = host
 
     # -------------------------------------------------------------------------
     # Protocol section

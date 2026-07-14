@@ -21,10 +21,11 @@ whose ``status`` reflects the combined existence + validity outcome:
 | chainvalidator      | status   | meaning                                    |
 +=====================+==========+============================================+
 | SECURE              | OK       | Signed and chain of trust fully valid      |
-| INSECURE            | WARNING  | Signed but chain not anchored to root      |
+| INSECURE + DNSKEY   | WARNING  | Signed but chain not anchored to root      |
+|                     |          | (island of security)                       |
+| INSECURE, no DNSKEY | NOT_FOUND| Zone is unsigned — no DNSSEC records       |
 | BOGUS               | ERROR    | Signatures present but cryptographically   |
 |                     |          | broken                                     |
-| not signed          | NOT_FOUND| No DNSSEC records found                    |
 | lookup failure      | ERROR    | Could not complete the check               |
 +---------------------+----------+--------------------------------------------+
 
@@ -80,6 +81,23 @@ def _assess_soa(domain: str, timeout: float = 5.0) -> DNSSECReport:
         return r
 
 
+def _zone_is_signed(report: DNSSECReport) -> bool:
+    """Return ``True`` when the innermost zone in *report* has DNSKEY records.
+
+    chainvalidator flags any delegation without a DS record as
+    :attr:`~chainvalidator.models.Status.INSECURE`, regardless of whether the
+    child zone publishes DNSKEY records.  Only a zone that *does* publish
+    DNSKEYs is genuinely "signed but not anchored" (an island of security);
+    a zone without DNSKEYs is plain unsigned.
+
+    :param report: Chainvalidator report for the domain being checked.
+    :type report: chainvalidator.models.DNSSECReport
+    :returns: ``True`` when the last chain link carries DNSKEY records.
+    :rtype: bool
+    """
+    return bool(report.chain and report.chain[-1].dnskeys)
+
+
 def _dnssec_check(
     report: DNSSECReport,
     subject: str,
@@ -120,8 +138,11 @@ def _dnssec_check(
             details=details,
         )
 
-    # ── INSECURE: signed but delegation not anchored to root ─────────────────
-    if report.status is CVStatus.INSECURE:
+    # ── INSECURE: chainvalidator reports INSECURE both for a *signed* zone
+    # whose delegation lacks a DS record (a true "island of security") and
+    # for a zone that has no DNSKEY records at all.  The latter is simply
+    # unsigned and must not be labelled "signed — insecure".
+    if report.status is CVStatus.INSECURE and _zone_is_signed(report):
         details = report.warnings[:] or [
             f"{subject} has DNSSEC records but the delegation chain is not "
             "anchored to the IANA root trust anchor (insecure island of security)."

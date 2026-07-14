@@ -535,8 +535,8 @@ def print_full_report(report: MailReport, *, console: Console | None = None) -> 
         print_tlsrpt(report.tlsrpt, console=con)
     if report.mta_sts:
         print_mta_sts(report.mta_sts, console=con)
-    if report.blacklist:
-        print_blacklist(report.blacklist, console=con)
+    for bl_result in report.blacklist:
+        print_blacklist(bl_result, console=con)
 
     print_verdict(report, console=con)
 

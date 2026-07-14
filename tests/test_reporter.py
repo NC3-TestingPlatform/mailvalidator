@@ -354,7 +354,7 @@ class TestPrintFullReport:
             b.total_checked = 5
             b.listed_on = []
             b.checks = []
-            r.blacklist = b
+            r.blacklist = [b]
         if dnssec:
             r.dnssec_domain = DNSSECResult(domain="example.com")
             r.dnssec_domain.checks = [

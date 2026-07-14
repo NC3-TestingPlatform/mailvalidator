@@ -337,7 +337,7 @@ class TestCollectChecks:
 
         bl = BlacklistResult(ip="1.2.3.4")
         bl.checks = [_check("bl_check", Status.ERROR)]
-        r.blacklist = bl
+        r.blacklist = [bl]
 
         dd = DNSSECResult(domain="example.com")
         dd.checks = [_check("dd_check", Status.WARNING)]
@@ -557,11 +557,96 @@ class TestExtractVerdictActions:
         actions = extract_verdict_actions(r)
         assert len(actions) == 1
 
+    def test_mx_dnssec_actions_merged_into_one(self):
+        r = _empty_report()
+        dm = DNSSECResult(domain="example.com")
+        dm.checks = [
+            _check(
+                f"DNSSEC (mx{i}.provider.example)",
+                Status.NOT_FOUND,
+                details=[f"mx{i}.provider.example is not DNSSEC-signed."],
+            )
+            for i in range(1, 4)
+        ]
+        r.dnssec_mx = dm
+        actions = extract_verdict_actions(r)
+        dnssec_actions = [a for a in actions if a.check_name.startswith("DNSSEC (")]
+        assert len(dnssec_actions) == 1
+        assert "(applies to 3 MX hosts)" in dnssec_actions[0].text
+
+    def test_mx_dnssec_single_action_not_annotated(self):
+        r = _empty_report()
+        dm = DNSSECResult(domain="example.com")
+        dm.checks = [
+            _check(
+                "DNSSEC (mx1.provider.example)",
+                Status.NOT_FOUND,
+                details=["mx1.provider.example is not DNSSEC-signed."],
+            )
+        ]
+        r.dnssec_mx = dm
+        actions = extract_verdict_actions(r)
+        dnssec_actions = [a for a in actions if a.check_name.startswith("DNSSEC (")]
+        assert len(dnssec_actions) == 1
+        assert "MX hosts" not in dnssec_actions[0].text
+
+    def test_domain_dnssec_action_not_merged_with_mx(self):
+        r = _empty_report()
+        dd = DNSSECResult(domain="example.com")
+        dd.checks = [
+            _check(
+                "DNSSEC (example.com)",
+                Status.NOT_FOUND,
+                details=["example.com is not DNSSEC-signed."],
+            )
+        ]
+        r.dnssec_domain = dd
+        dm = DNSSECResult(domain="example.com")
+        dm.checks = [
+            _check(
+                f"DNSSEC (mx{i}.provider.example)",
+                Status.NOT_FOUND,
+                details=[f"mx{i}.provider.example is not DNSSEC-signed."],
+            )
+            for i in range(1, 3)
+        ]
+        r.dnssec_mx = dm
+        actions = extract_verdict_actions(r)
+        dnssec_actions = [a for a in actions if a.check_name.startswith("DNSSEC (")]
+        assert len(dnssec_actions) == 2
+        names = {a.check_name for a in dnssec_actions}
+        assert "DNSSEC (example.com)" in names
+
+    def test_mx_dnssec_different_severities_not_merged(self):
+        """WARNING (island of security) and NOT_FOUND (unsigned) both map to
+        MEDIUM via _PRIORITY, but a hypothetical differing severity must stay
+        separate — merging groups strictly by severity."""
+        r = _empty_report()
+        dm = DNSSECResult(domain="example.com")
+        dm.checks = [
+            _check(
+                "DNSSEC (mx1.provider.example)",
+                Status.WARNING,
+                details=["signed — insecure"],
+            ),
+            _check(
+                "DNSSEC (mx2.provider.example)",
+                Status.NOT_FOUND,
+                details=["mx2.provider.example is not DNSSEC-signed."],
+            ),
+        ]
+        r.dnssec_mx = dm
+        actions = extract_verdict_actions(r)
+        dnssec_actions = [a for a in actions if a.check_name.startswith("DNSSEC (")]
+        # Same severity (MEDIUM) → merged into one annotated action.
+        assert len(dnssec_actions) == 1
+        assert "(applies to 2 MX hosts)" in dnssec_actions[0].text
+
     def test_blacklist_check_included(self):
         r = _empty_report()
         bl = BlacklistResult(ip="1.2.3.4")
         bl.checks = [_check("Blacklist Status", Status.ERROR)]
-        r.blacklist = bl
+        r.blacklist = [bl]
         actions = extract_verdict_actions(r)
         assert any(a.check_name == "Blacklist Status" for a in actions)
 

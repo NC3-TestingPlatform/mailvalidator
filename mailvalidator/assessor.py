@@ -29,19 +29,66 @@ from mailvalidator.models import MailReport, MXRecord
 logger = logging.getLogger("mailvalidator")
 
 
-def _resolve_mx_ips(records: list[MXRecord]) -> list[str]:
-    """Return unique IPv4 addresses collected from a list of MX records.
+def _provider_zone(exchange: str) -> str:
+    """Return a coarse provider-zone key for an MX exchange hostname.
 
-    :param records: MX records to extract IP addresses from.
-    :returns: Deduplicated list of IPv4 address strings.
-    :rtype: list[str]
+    Uses the last two DNS labels (e.g. ``"aspmx.l.google.com"`` →
+    ``"google.com"``) as a heuristic for the operating mail provider so probe
+    selection can cover distinct providers rather than several hosts of the
+    same one.
+
+    :param exchange: MX exchange hostname.
+    :type exchange: str
+    :returns: Lower-case provider-zone key.
+    :rtype: str
     """
-    ips: list[str] = []
-    for rec in records:
-        for ip in rec.ip_addresses:
-            if ip not in ips and "." in ip:  # simple IPv4 filter
-                ips.append(ip)
-    return ips
+    labels = exchange.rstrip(".").lower().split(".")
+    return ".".join(labels[-2:]) if len(labels) >= 2 else exchange.lower()
+
+
+def _select_probe_records(records: list[MXRecord], limit: int = 3) -> list[MXRecord]:
+    """Pick up to *limit* MX records covering distinct provider zones.
+
+    Records are examined in priority order.  A first pass keeps one record
+    per provider zone so backup MX hosts run by a different provider (often
+    the weakest link) are always probed; remaining slots are then filled by
+    priority.  The returned list preserves the original priority order.
+
+    :param records: MX records sorted by priority (ascending).
+    :type records: list[~mailvalidator.models.MXRecord]
+    :param limit: Maximum number of records to select.
+    :type limit: int
+    :returns: Selected records in priority order.
+    :rtype: list[~mailvalidator.models.MXRecord]
+    """
+    selected_ids: set[int] = set()
+    seen_zones: set[str] = set()
+    for rec in records:  # one host per provider zone first
+        if len(selected_ids) >= limit:
+            break
+        zone = _provider_zone(rec.exchange)
+        if zone not in seen_zones:
+            seen_zones.add(zone)
+            selected_ids.add(id(rec))
+    for rec in records:  # fill remaining slots by priority
+        if len(selected_ids) >= limit:
+            break
+        selected_ids.add(id(rec))
+    return [r for r in records if id(r) in selected_ids]
+
+
+def _primary_ip(rec: MXRecord) -> str | None:
+    """Return the first IPv4 address of *rec*, falling back to any address.
+
+    :param rec: MX record with resolved addresses.
+    :type rec: ~mailvalidator.models.MXRecord
+    :returns: Preferred address string, or ``None`` when the record has none.
+    :rtype: str or None
+    """
+    for ip in rec.ip_addresses:
+        if "." in ip:  # simple IPv4 filter
+            return ip
+    return rec.ip_addresses[0] if rec.ip_addresses else None
 
 
 def assess(
@@ -58,11 +105,12 @@ def assess(
 
     :param domain: The target domain name to assess (e.g. ``"example.com"``).
     :param smtp_port: TCP port used for SMTP diagnostics.  Defaults to ``25``.
-    :param run_blacklist: When ``True`` (default), check the first MX IP
-        against 100+ DNSBLs.  This step is parallelised but can take up to
-        ~30 s on slow networks.
-    :param run_smtp: When ``True`` (default), probe each MX server via SMTP
-        and STARTTLS.  Requires outbound TCP access to *smtp_port*.
+    :param run_blacklist: When ``True`` (default), check one MX IP per
+        distinct mail provider (up to three) against 100+ DNSBLs.  This step
+        is parallelised but can take up to ~30 s on slow networks.
+    :param run_smtp: When ``True`` (default), probe up to three MX servers —
+        selected to cover distinct mail providers — via SMTP and STARTTLS.
+        Requires outbound TCP access to *smtp_port*.
     :param run_dnssec: When ``True`` (default), validate the DNSSEC chain of
         trust for the email address domain and each MX server domain.
     :param progress_cb: Optional callable invoked with a short status string
@@ -83,23 +131,28 @@ def assess(
     _cb("Checking MX records…")
     report.mx = check_mx(domain, timeout=timeout)
 
-    # Submit blacklist immediately — it takes ~30 s and only needs the first
-    # MX IP, available now.  Runs concurrently with all remaining checks.
+    # Submit blacklist checks immediately — they take ~30 s and only need the
+    # MX IPs, available now.  One IP per selected provider zone is checked so
+    # backup MX hosts of a different provider are covered too.  Runs
+    # concurrently with all remaining checks.
     _bl_pool = None
-    _bl_future = None
+    _bl_futures: list[Any] = []
     if run_blacklist:
-        _bl_mx_ips = _resolve_mx_ips(report.mx.records) if report.mx else []
-        if _bl_mx_ips:
-            _bl_target: str | None = _bl_mx_ips[0]
+        _bl_targets: list[str] = []
+        if report.mx and report.mx.records:
+            for _rec in _select_probe_records(report.mx.records):
+                _ip = _primary_ip(_rec)
+                if _ip and _ip not in _bl_targets:
+                    _bl_targets.append(_ip)
         else:
             try:
-                _bl_target = socket.gethostbyname(domain)
+                _bl_targets = [socket.gethostbyname(domain)]
             except socket.gaierror:
-                _bl_target = None
-        if _bl_target:
-            _cb(f"Blacklist check on {_bl_target} (running in background…)")
-            _bl_pool = ThreadPoolExecutor(max_workers=1)
-            _bl_future = _bl_pool.submit(check_blacklist, _bl_target)
+                _bl_targets = []
+        if _bl_targets:
+            _cb(f"Blacklist check on {', '.join(_bl_targets)} (running in background…)")
+            _bl_pool = ThreadPoolExecutor(max_workers=len(_bl_targets))
+            _bl_futures = [_bl_pool.submit(check_blacklist, t) for t in _bl_targets]
 
     _cb("Checking DNS records (SPF, DMARC, DKIM, BIMI, TLSRPT, MTA-STS, DNSSEC) in parallel…")
     _dns_tasks: dict[str, Any] = {
@@ -121,17 +174,19 @@ def assess(
             setattr(report, _futures[_fut], _fut.result())
 
     if run_smtp and report.mx and report.mx.records:
-        _mx_to_probe = report.mx.records[:3]
+        _mx_to_probe = _select_probe_records(report.mx.records)
         with ThreadPoolExecutor(max_workers=len(_mx_to_probe)) as _smtp_pool:
             _smtp_futures = [
-                _smtp_pool.submit(check_smtp, rec.exchange, smtp_port)
+                _smtp_pool.submit(
+                    check_smtp, rec.exchange, smtp_port, ip=_primary_ip(rec)
+                )
                 for rec in _mx_to_probe
             ]
             report.smtp = [f.result() for f in _smtp_futures]
 
-    # Collect blacklist result (started right after MX; likely already done).
-    if _bl_future is not None and _bl_pool is not None:
-        report.blacklist = _bl_future.result()
+    # Collect blacklist results (started right after MX; likely already done).
+    if _bl_futures and _bl_pool is not None:
+        report.blacklist = [f.result() for f in _bl_futures]
         _bl_pool.shutdown(wait=False)
 
     return report
