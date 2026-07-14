@@ -11,6 +11,20 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.3.2] — 2026-07-14
+
+### Changed
+- `assessor.py`: when the DNSBL blacklist check falls back to the domain's
+  own A record, the report now says so explicitly. The Blacklist Status
+  details gain a note distinguishing the two fallback cases: no MX records
+  at all (the A record *is* the implicit MX destination, RFC 5321 §5.1)
+  versus MX present but unresolvable (the A record is **not** in the actual
+  mail path — implicit MX does not apply when an MX record exists).
+  Previously the panel showed a bare IP with no indication it was not an
+  MX address.
+
+---
+
 ## [0.3.1] — 2026-07-14
 
 ### Added
@@ -453,7 +467,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.2.10...v0.2.11

@@ -13,12 +13,15 @@ from mailvalidator.assessor import (
 )
 from mailvalidator.models import (
     BIMIResult,
+    BlacklistResult,
+    CheckResult,
     DKIMResult,
     DMARCResult,
     MailReport,
     MTASTSResult,
     MXRecord,
     SPFResult,
+    Status,
     TLSRPTResult,
 )
 from tests.conftest import make_mx_result, make_simple_result
@@ -315,9 +318,18 @@ class TestAssess:
                 assess("example.com")
         mock_smtp.assert_called_once_with("mail.example.com", 25, ip="9.9.9.9")
 
+    @staticmethod
+    def _bl_result(ip: str) -> BlacklistResult:
+        result = BlacklistResult(ip=ip, total_checked=104)
+        result.checks.append(
+            CheckResult(name="Blacklist Status", status=Status.OK, value="Clean")
+        )
+        return result
+
     def test_blacklist_falls_back_to_a_record(self):
-        """When MX has no IPv4 IPs, blacklist uses gethostbyname(domain)."""
-        mock_bl = MagicMock(return_value=MagicMock())
+        """When no MX records exist, blacklist uses gethostbyname(domain) and
+        the result is annotated with the implicit-MX note."""
+        mock_bl = MagicMock(return_value=self._bl_result("3.3.3.3"))
         # make_mx_result() returns empty records → no IPv4 → fallback path
         with self._ctx(
             {
@@ -328,8 +340,11 @@ class TestAssess:
             with patch(
                 "mailvalidator.assessor.socket.gethostbyname", return_value="3.3.3.3"
             ):
-                assess("example.com")
+                report = assess("example.com")
         mock_bl.assert_called_once_with("3.3.3.3", max_workers=50)
+        details = report.blacklist[0].checks[0].details
+        assert any("implicit MX" in d for d in details)
+        assert any("3.3.3.3" in d for d in details)
 
     def test_blacklist_skip_is_recorded_when_gethostbyname_fails(self):
         mock_bl = MagicMock()
@@ -362,7 +377,7 @@ class TestAssess:
                 ip_addresses=[],
             )
         ]
-        mock_bl = MagicMock(return_value=MagicMock())
+        mock_bl = MagicMock(return_value=self._bl_result("7.7.7.7"))
         with self._ctx(
             {
                 "check_smtp": MagicMock(return_value=MagicMock()),
@@ -376,5 +391,27 @@ class TestAssess:
                     "mailvalidator.assessor.socket.gethostbyname",
                     return_value="7.7.7.7",
                 ):
-                    assess("example.com")
+                    report = assess("example.com")
         mock_bl.assert_called_once_with("7.7.7.7", max_workers=50)
+        # The report must say whose IP was checked and why.
+        details = report.blacklist[0].checks[0].details
+        assert any("no MX target resolves" in d for d in details)
+        assert any("not in the actual mail path" in d for d in details)
+
+    def test_blacklist_from_mx_ips_has_no_fallback_note(self):
+        records = [
+            MXRecord(priority=10, exchange="mail.example.com", ip_addresses=["9.9.9.9"])
+        ]
+        mock_bl = MagicMock(return_value=self._bl_result("9.9.9.9"))
+        with self._ctx(
+            {
+                "check_smtp": MagicMock(return_value=MagicMock()),
+                "check_blacklist": mock_bl,
+            }
+        ):
+            with patch(
+                "mailvalidator.assessor.check_mx", return_value=make_mx_result(records)
+            ):
+                report = assess("example.com")
+        details = report.blacklist[0].checks[0].details
+        assert not any("A record" in d for d in details)
