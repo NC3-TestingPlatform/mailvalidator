@@ -103,7 +103,8 @@ pytest tests/checks/test_spf.py -v
 - Conventional commits: `fix:`, `feat:`, `fix(scope):`, `refactor:`, `test:`, `docs:`
 - Input validation lives in `cli.py` (`_validate_domain`, `_validate_host`, `_validate_ip`)
 - `resolve()` from `dns_utils` is the single DNS abstraction; patch it in tests
-- No CI config currently present
+- CI: `.github/workflows/ci.yml` runs `ruff check` and the full suite on
+  push and PR to `main`, across Python 3.11-3.13
 
 ## Before Every Commit
 
