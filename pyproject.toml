@@ -56,7 +56,7 @@ classifiers = [
 ]
 dependencies = [
     "dnspython>=2.8.0",
-    "rich>=13.7",
+    "rich>=15.0.0",
     "typer>=0.26.7",
     "aiohttp>=3.14.3",
     "cryptography>=49.0.0",
