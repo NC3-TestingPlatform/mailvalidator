@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.3.4] — 2026-08-12
+
 ### Changed
 
 - Dependency floors raised across the board by the Dependabot batch of
@@ -28,6 +32,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   `26.3.0`) because Dependabot rebased onto newer releases mid-merge. An
   environment installed before this batch may sit below the declared floor —
   re-run `pip install -e ".[dev]"`.
+
+- `pyproject.toml`: `license` is now the canonical SPDX expression
+  `GPL-3.0-only` instead of the deprecated `GPL-3.0` identifier. The license
+  itself is unchanged — only its machine-readable spelling.
 
 ---
 
@@ -501,7 +509,8 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/NC3-TestingPlatform/mailvalidator/compare/v0.3.0...v0.3.1
