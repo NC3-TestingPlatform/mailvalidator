@@ -16,7 +16,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   the suite is actually exercised against: `typer>=0.26.7`, `aiohttp>=3.14.3`,
   `cryptography>=49.0.0`, `dnspython>=2.8.0`, `pyopenssl>=26.4.0`,
   `rich>=15.0.0`, `setuptools>=83.0.0`, and the dev extras `pytest>=9.1.1`,
-  `pytest-cov>=7.1.0`, `pytest-mock>=3.15.1`. Seven are major-version raises.
+  `pytest-cov>=7.1.0`, `pytest-mock>=3.15.1`. Six cross a major-version
+  boundary (`cryptography`, `pyopenssl`, `rich`, `setuptools`, `pytest`,
+  `pytest-cov`); `typer` 0.12 → 0.26 stays within `0.x`, and `aiohttp`,
+  `dnspython` and `pytest-mock` are minor raises.
   No source change was required; 777 tests pass at 100% coverage on the new
   floors.
 
