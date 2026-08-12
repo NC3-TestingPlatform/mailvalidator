@@ -9,6 +9,23 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency floors raised across the board by the Dependabot batch of
+  2026-08-12 (PRs #7-#16), bringing every declared minimum up to the versions
+  the suite is actually exercised against: `typer>=0.26.7`, `aiohttp>=3.14.3`,
+  `cryptography>=49.0.0`, `dnspython>=2.8.0`, `pyopenssl>=26.4.0`,
+  `rich>=15.0.0`, `setuptools>=83.0.0`, and the dev extras `pytest>=9.1.1`,
+  `pytest-cov>=7.1.0`, `pytest-mock>=3.15.1`. Seven are major-version raises.
+  No source change was required; 777 tests pass at 100% coverage on the new
+  floors.
+
+  Note for anyone upgrading: `aiohttp` and `pyopenssl` landed one patch above
+  what their PR titles proposed (`3.14.3` and `26.4.0`, not `3.14.1` and
+  `26.3.0`) because Dependabot rebased onto newer releases mid-merge. An
+  environment installed before this batch may sit below the declared floor —
+  re-run `pip install -e ".[dev]"`.
+
 ---
 
 ## [0.3.3] — 2026-07-14
