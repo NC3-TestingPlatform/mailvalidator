@@ -9,6 +9,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+---
+
+## [0.3.4] — 2026-08-12
+
 ### Changed
 
 - Dependency floors raised across the board by the Dependabot batch of
@@ -29,11 +33,6 @@ Version numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   environment installed before this batch may sit below the declared floor —
   re-run `pip install -e ".[dev]"`.
 
----
-
-## [0.3.4] — 2026-08-12
-
-### Changed
 - `pyproject.toml`: `license` is now the canonical SPDX expression
   `GPL-3.0-only` instead of the deprecated `GPL-3.0` identifier. The license
   itself is unchanged — only its machine-readable spelling.
